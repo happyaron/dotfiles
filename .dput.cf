@@ -1,0 +1,13 @@
+[my-ppa]
+fqdn = upload.ubuntu.com
+method = ftp
+incoming = ~happyaron/ppa/ubuntu/
+login = anonymous
+allow_unsigned_uploads = 0
+
+[kernel]
+fqdn = upload.ubuntu.com
+method = ftp
+incoming = ~happyaron/kernel/ubuntu/
+login = anonymous
+allow_unsigned_uploads = 0

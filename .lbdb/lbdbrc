@@ -1,0 +1,2 @@
+#METHODS="m_inmail m_abook"
+MUTTALIAS_FILES=.mutt/alias

@@ -1,0 +1,52 @@
+#!/usr/bin/env python3
+# Bing Wallpapers from cn.bing.com
+
+import os
+import urllib.request
+import datetime
+import shutil
+
+url = "https://cn.bing.com"
+dir = "~/usr/wallpapers/"
+sig = 'g_img={url: "'
+
+
+dir_parent = os.path.expanduser(dir)
+dir_cur = dir_parent + 'current/'
+dir_his = dir_parent + 'previous/'
+dir_lock = dir_parent + 'lockscreen/'
+
+flag = 0
+r = urllib.request.urlopen(url)
+html = r.read().decode(r.headers.get_content_charset())
+for x in range(html.find(sig),(html.find(sig)+100)):
+    if html[x] == '"':
+        if flag == 1:
+            break
+        else:
+            flag = 1
+            continue
+    elif flag == 1:
+        url += html[x]
+
+# To work around resolution problems in image
+url = url.replace('1366x768', '1920x1080')
+
+file_name = dir_cur + url.split('/')[-1].split('#')[0].split('?')[0]
+
+if not os.path.exists(file_name):
+    if not os.path.exists(dir_his):
+        os.makedirs(dir_his)
+    if not os.path.exists(dir_lock):
+        os.makedirs(dir_lock)
+    if not os.path.exists(dir_cur):
+        os.makedirs(dir_cur)
+    else:
+        dir_newname = dir_parent + datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
+        os.rename(dir_cur,dir_newname)
+        shutil.move(dir_newname, dir_his)
+        os.makedirs(dir_cur)
+    with urllib.request.urlopen(url) as response, open(file_name, 'wb') as out_file:
+        shutil.copyfileobj(response, out_file)
+    # Symlink from /usr/share/wallpapers/Elarun/contents/images/2560x1600.png
+    os.system('convert ' + file_name + ' ' + dir_lock + 'wallpaper.png')

@@ -1,0 +1,21 @@
+[retriever]
+type = SimpleIMAPSSLRetriever
+server = imap.gmail.com
+username = happyaron.xu
+password = passwdhidden
+mailboxes = ("[Gmail]/All Mail",)
+
+[destination]
+#type = MDA_external
+#path = /usr/bin/procmail
+type = Maildir
+path = ~/.mail/inbox/
+
+[options]
+delete = false
+message_log = ~/.mail/getmail.log
+message_log_syslog = false
+read_all = false
+verbose = 2
+delivered_to = false
+received = false

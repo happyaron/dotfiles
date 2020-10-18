@@ -1,0 +1,159 @@
+#!/bin/sh
+# Author: Aron Xu <happyaron.xu@gmail.com>
+# License: GPL-3
+
+BASEDIR="$HOME/pbuilder"
+PBUILDER_TMP=/tmp/pbuilder
+
+DIST=$1
+DEB_TARGET_ARCH=$2
+OPERATION=$3
+DSCFILE=$4
+
+for i in dpkg-architecture pbuilder pigz; do
+    if ! `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin which $i > /dev/null`; then
+        printf "E: Required command \"$i\" not found.\n" 1>&2
+        exit 1
+    fi
+done
+
+for i in debootstrap qemu-debootstrap; do
+    if `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin which $i > /dev/null`; then
+	DEBOOTSTRAP=$i
+    fi
+done
+
+if ! `dpkg-architecture -a$DEB_TARGET_ARCH >/dev/null 2>&1`; then
+    printf "E: \"$DEB_TARGET_ARCH\" is not a valid architecture.\n" 1>&2
+    exit 1
+else
+    DEB_HOST_ARCH=`dpkg-architecture -qDEB_HOST_ARCH`
+    DEB_HOST_ARCH_BITS=`dpkg-architecture -qDEB_HOST_ARCH_BITS`
+    DEB_TARGET_ARCH_BITS=`dpkg-architecture -a$DEB_TARGET_ARCH -qDEB_HOST_ARCH_BITS`
+fi
+
+unset $ARG
+if [ $DEB_HOST_ARCH_BITS -gt $DEB_TARGET_ARCH_BITS ]; then
+    ARG="$ARG linux32";
+elif [ $DEB_HOST_ARCH_BITS -lt $DEB_TARGET_ARCH_BITS ]; then
+    printf "E: Can not build $DEB_TARGET_ARCH package on this machine.\n" 1>&2
+    exit 1
+fi
+
+if `echo $DIST | grep "bpo$" > /dev/null`; then
+	DISTRO=`echo $DIST | sed 's/bpo$//'`
+else
+    DISTRO=$DIST
+fi
+
+if ! [ -d $BASEDIR/etc ]; then
+    printf "E: $BASEDIR/etc does not exist, BASEDIR not valid.\n" 1>&2
+    exit 1
+elif ! [ -s $BASEDIR/etc/$DIST-$DEB_TARGET_ARCH ]; then
+    printf "E: $BASEDIR/etc/$DIST-$DEB_TARGET_ARCH pbuilderrc file does not exist or empty.\n" 1>&2
+    exit 1
+fi
+
+if ! [ -d $BASEDIR/base ]; then
+    printf "W: $BASEDIR/base does not exist, creating.\n" 1>&2
+    mkdir -p $BASEDIR/base
+fi
+
+for i in logs result; do
+    if ! [ -d $BASEDIR/$i/$DIST-$DEB_TARGET_ARCH ]; then
+        printf "W: Directory $BASEDIR/$i/$DIST-$DEB_TARGET_ARCH does not exist, creating.\n" 1>&2
+        mkdir -p $BASEDIR/$i/$DIST-$DEB_TARGET_ARCH
+    fi
+done
+
+PBUILDER_ACTION=$OPERATION
+if [ "$OPERATION" = "create" ]; then
+    PROCEED=true
+elif ! [ -s $BASEDIR/base/$DIST-$DEB_TARGET_ARCH-base.tgz ]; then
+    printf "E: $BASEDIR/base/$DIST-$DEB_TARGET_ARCH-base.tgz does not exist or empty.\n" 1>&2
+    exit 1
+else
+    case $OPERATION in
+        build )
+            if ! [ -s $DSCFILE ]; then
+                printf "E: $DSCFILE does not exist or empty.\n" 1>&2
+                exit 1
+            else
+                BASENAME=`basename $DSCFILE .dsc`
+            fi
+            PROCEED=true
+            ;;
+        update|clean|execute|debuild )
+            PROCEED=true
+            ;;
+        login )
+            LOGIN=true
+            ;;
+        edit )
+            EDIT=true
+            PBUILDER_ACTION=login
+            ;;
+        edit-script )
+            EXEC=true
+            PBUILDER_ACTION=execute
+            ;;
+        * )
+            printf "E: Operations in build|create|update|login|execute|edit|edit-script.\n" 1>&2
+            exit 1
+            ;;
+    esac
+fi
+
+DATUM=`/bin/date +"%Y%m%d-%H%M"`
+if ! [ -z $BASENAME ]; then
+    LOG=$BASEDIR/logs/$DIST-$DEB_TARGET_ARCH/${OPERATION}_${BASENAME}_${DATUM}.log
+else
+    LOG=$BASEDIR/logs/$DIST-$DEB_TARGET_ARCH/${OPERATION}_${DATUM}.log
+fi
+
+# After this point, $@ is pointed to parameters after --.
+while [ -n "$1" ]; do
+    case "$1" in
+    --) shift
+        break;;
+    esac
+    shift
+done
+
+FUNC_PBUILDER_TMP() {
+    if ! [ -d $PBUILDER_TMP ]; then
+        printf "W: $PBUILDER_TMP does not exist, creating.\n" 1>&2
+        sudo mkdir -p $PBUILDER_TMP
+    fi
+}
+
+NJOBS=`nproc`
+PBUILDER_CMD="sudo DEB_BUILD_PARALLEL=1 DEB_BUILD_OPTIONS=parallel=${NJOBS} $ARG pbuilder $PBUILDER_ACTION"
+COMMON_ARGS="--override-config \
+    --autocleanaptcache \
+    --compressprog pigz \
+    --debootstrap $DEBOOTSTRAP \
+    --architecture $DEB_TARGET_ARCH \
+    --distribution $DISTRO \
+    --configfile $BASEDIR/etc/$DIST-$DEB_TARGET_ARCH \
+    --basetgz $BASEDIR/base/$DIST-$DEB_TARGET_ARCH-base.tgz"
+
+if [ "$PROCEED" = "true" ]; then
+    FUNC_PBUILDER_TMP
+    $PBUILDER_CMD $COMMON_ARGS \
+        --buildresult $BASEDIR/result/$DIST-$DEB_TARGET_ARCH \
+        --logfile $LOG \
+        $@ $DSCFILE
+elif [ "$LOGIN" = "true" ]; then
+    FUNC_PBUILDER_TMP
+    $PBUILDER_CMD $COMMON_ARGS
+elif [ "$EDIT" = "true" ]; then
+    FUNC_PBUILDER_TMP
+    $PBUILDER_CMD $COMMON_ARGS \
+        --save-after-login
+elif [ "$EXEC" = "true" ]; then
+    FUNC_PBUILDER_TMP
+    $PBUILDER_CMD $COMMON_ARGS \
+        --logfile $LOG \
+        --save-after-exec
+fi

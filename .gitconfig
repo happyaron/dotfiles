@@ -1,0 +1,10 @@
+[user]
+	name = Aron Xu
+	email = aronxu@gnome.org
+[color]
+	branch = auto
+	diff = auto
+	status = auto
+	grep = auto
+[url "ssh://aronxu@git.gnome.org/git/"]
+	insteadof = gnome:

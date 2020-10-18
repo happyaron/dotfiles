@@ -1,0 +1,12 @@
+#filterwin2k
+#strict-order
+all-servers
+no-negcache
+no-resolv
+cache-size=8192
+clear-on-reload
+server=60.247.76.82@eth0
+server=123.124.17.30@eth0
+#server=8.8.8.8
+#server=8.8.4.4
+#server=106.187.34.20

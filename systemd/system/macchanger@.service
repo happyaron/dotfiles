@@ -1,0 +1,11 @@
+[Unit]
+Description=MAC address change on %I
+Before=NetworkManager.service
+After=sys-subsystem-net-devices-%i.device
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/macchanger -A %i
+
+[Install]
+WantedBy=multi-user.target

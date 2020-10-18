@@ -1,0 +1,24 @@
+QUILT_PATCHES=debian/patches
+QUILT_REFRESH_ARGS="-p ab --no-timestamps --no-index"
+DEBEMAIL=aron@debian.org
+DEBFULLNAME="Aron Xu"
+export QUILT_PATCHES QUILT_REFRESH_ARGS DEBEMAIL DEBFULLNAME
+
+PATH=$PATH:$HOME/usr/bin:$HOME/.local/bin
+export PATH
+
+LANG=en_US.UTF-8
+LANGUAGE=en_US
+export LANG LANGUAGE
+export TZ=:/etc/localtime
+export MOSH_SERVER_NETWORK_TMOUT=7200
+
+alias lintian='lintian -IE --show-overrides'
+alias gpg=gpg2
+alias xz='xz -T0'
+alias syncpackage='syncpackage --debian-mirror=https://mirrors.tuna.tsinghua.edu.cn/debian'
+
+## For some special environment
+# umask 022
+# export LD_PRELOAD=${LD_PRELOAD:+"$LD_PRELOAD "}/usr/lib/x86_64-linux-gnu/libeatmydata.so
+# cd $HOME

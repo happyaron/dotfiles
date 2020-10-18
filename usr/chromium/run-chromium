@@ -1,0 +1,25 @@
+#!/bin/sh
+# Copyright (C) 2010 Aron Xu <happyaron.xu@gmail.com>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+# Work around the im-config problem
+XIM_INFO=$(echo $XMODIFIERS | cut -d'=' -f2)
+if [ "$GTK_IM_MODULE" = "xim" ] && [ "$XIM_INFO" != "xim" ]; then 
+        export GTK_IM_MODULE=$XIM_INFO
+fi
+
+export CHROME_DEVEL_SANDBOX="$HOME/usr/chromium/chromium-browser/chrome_sandbox"
+. /usr/lib/pepperflashplugin-nonfree/etc-chromium-default.txt
+exec $HOME/usr/chromium/chromium-browser/chrome $1 --disk-cache-dir="/tmp/browser.`whoami`.cache/chromium" --disk-cache-size=52428800 $@

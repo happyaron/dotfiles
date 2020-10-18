@@ -1,0 +1,4 @@
+[ui]
+username = Aron Xu <happyaron.xu@gmail.com>
+[extensions]
+hgext.convert=

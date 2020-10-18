@@ -1,0 +1,49 @@
+#!/bin/sh
+
+if [ -z $1 ]; then
+        printf "Basic setup jobs for new Ubuntu installation\n"
+        printf "Usage:\n\t`basename $0` \$DISTRO [\$MIRROR_SITE]\n"
+        exit
+fi
+DISTRO=$1
+
+MIRROR_SITE=mirror.bit.edu.cn
+if ! [ -z $2 ]; then
+	MIRROR_SITE=$2
+fi
+
+DISTRO_LSB=`lsb_release -sc`
+if [ "$DISTRO_LSB" != "$DISTRO" ]; then
+	printf "Installed distro is "$DISTRO_LSB", continue?\n"
+	read RES
+	case "$RES" in
+		y|Y ) printf "Continue operation.\n";;
+		* ) printf "Give up.\n"; exit ;;
+	esac
+fi
+
+cat <<EOF > /tmp/sources.list
+deb http://${MIRROR_SITE}/ubuntu/ $1 main restricted universe multiverse
+deb-src http://${MIRROR_SITE}/ubuntu/ $1 main restricted universe multiverse
+deb http://${MIRROR_SITE}/ubuntu/ $1-updates main restricted universe multiverse
+deb-src http://${MIRROR_SITE}/ubuntu/ $1-updates main restricted universe multiverse
+EOF
+
+if ! [ -f /etc/apt/sources.list.bak ]; then
+	sudo cp /etc/apt/sources.list /etc/apt/sources.list.bak
+fi
+sudo mv /tmp/sources.list /etc/apt/sources.list
+sudo apt-get update
+
+sudo apt-get -y dist-upgrade
+
+sudo apt-get -y install aptitude byobu zsh rsync vim
+
+sudo update-alternatives --set editor /usr/bin/vim.basic
+mkdir -p ~/testing
+
+sudo apt-get -y install git-buildpackage bzr quilt
+
+sudo apt-get -y install flashplugin-installer
+
+sudo apt-get clean
