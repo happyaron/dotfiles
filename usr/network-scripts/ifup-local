@@ -1,0 +1,29 @@
+#!/bin/sh
+# Split access for CentOS 6.x
+# Add the following entries to /etc/iproute2/rt_tables before proceeding:
+# 101     T1
+# 102     T2
+
+cd /etc/sysconfig/network-scripts
+
+cnt=0
+for i in ifcfg-br*; do
+    IF_NAME=$(echo $i | sed 's/ifcfg-//')
+    IF_IP=$(grep IPADDR $i | cut -f2 -d'=')
+    IF_GW=$(grep GATEWAY $i | cut -f2 -d'=')
+    IF_MASK=$(grep NETMASK $i | cut -f2 -d'=')
+    IF_NET=$(ipcalc -sn $IF_IP $IF_MASK | cut -f2 -d'=')
+    IF_PREFIX=$(ipcalc -sp $IF_IP $IF_MASK | cut -f2 -d'=')
+
+    cnt=$(expr $cnt + 1)
+
+    ip route add $IF_NET/$IF_PREFIX dev $IF_NAME src $IF_IP table T$cnt
+    ip route add default via $IF_GW dev $IF_NAME src $IF_IP table T$cnt
+
+    if ! `ip rule | grep $IF_IP >/dev/null 2>&1`; then
+        ip rule add from $IF_IP table T$cnt
+    fi
+
+    ip route | while read p; do ip route change $p initcwnd 10 initrwnd 10; done
+
+done

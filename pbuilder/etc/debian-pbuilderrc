@@ -1,0 +1,23 @@
+## Mirror configuration
+MIRRORSITE=http://http.debian.net/debian
+# OTHERMIRROR="deb http://http.debian.net/debian wheezy-backports main"
+## Enabled components
+# COMPONENTS="main universe"
+## Options to debootstrap
+DEBOOTSTRAPOPTS=(
+    '--variant=buildd'
+    '--keyring=/usr/share/keyrings/debian-archive-keyring.gpg'
+    )
+## Assume /tmp or /tmp/pbuilder is tmpfs
+BUILDPLACE=/tmp/pbuilder
+## No hard linking for tmpfs
+APTCACHEHARDLINK=no
+## kfreebsd, use this
+# USEDEVFS=yes
+## Seperate APT cache, not enabled by default
+# APTCACHE="$HOME/pbuilder/aptcache/$DIST-$ARCH/"
+## For using ccache, not enabled by default
+# export CCACHE_DIR="/var/cache/pbuilder/ccache"
+# export PATH="/usr/lib/ccache:${PATH}"
+# EXTRAPACKAGES+=ccache
+# BINDMOUNTS="${CCACHE_DIR}"

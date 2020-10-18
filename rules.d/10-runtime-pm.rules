@@ -1,0 +1,6 @@
+SUBSYSTEM=="pci", ACTION=="add", ATTR{power/control}="auto"
+SUBSYSTEM=="net", ACTION=="add",  KERNEL=="eth*", RUN+="/sbin/ethtool -s %k wol d"
+SUBSYSTEM=="net", ACTION=="add",  KERNEL=="wlan*", RUN+="/sbin/iw dev %k set power_save on"
+ACTION=="add", SUBSYSTEM=="usb", TEST=="power/control", ATTR{power/control}="auto"
+ACTION=="add", SUBSYSTEM=="usb", TEST=="power/autosuspend", ATTR{power/autosuspend}="2"
+#SUBSYSTEM=="scsi_host", ACTION=="add", KERNEL=="host*", ATTR{link_power_management_policy}="min_power"

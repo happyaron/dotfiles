@@ -1,0 +1,4 @@
+screen -t irssi /usr/bin/irssi
+screen -t zsh /bin/zsh
+screen -t zsh /bin/zsh
+select 0
