@@ -39,6 +39,7 @@ setopt complete_in_word         # stays where it is and completion is done from 
 setopt correct                  # spell check for commands only
 #setopt equals extended_glob    # use extra globbing operators
 setopt no_hist_beep             # don not beep on history expansion errors
+setopt no_list_beep             # do not beep on ambigious list completions
 setopt hash_list_all            # search all paths before command completion
 setopt hist_ignore_all_dups     # when runing a command several times, only store one
 setopt hist_reduce_blanks       # reduce whitespace in history
