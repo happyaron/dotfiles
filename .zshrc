@@ -54,6 +54,7 @@ setopt numeric_glob_sort        # when globbing numbered files, use real countin
 setopt inc_append_history       # append to history once executed
 setopt prompt_subst             # prompt more dynamic, allow function in prompt
 setopt nonomatch 
+setopt no_beep                  # supress all beep sound
 
 #remove / and . from WORDCHARS to allow alt-backspace to delete word
 WORDCHARS='*?_-[]~=&;!#$%^(){}<>'
