@@ -1,0 +1,11 @@
+[Unit]
+Description=Set DPI for Microsoft® Classic IntelliMouse®
+After=systemd-udev-settle.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 /usr/local/sbin/intellimouse_classic.py
+
+[Install]
+WantedBy=multi-user.target
