@@ -1,0 +1,28 @@
+#!/bin/sh
+THREADS=$(nproc)
+
+if [ -z "$1" ]; then
+  echo "Convert to HEVC/AAC video that is compatible to Apple devices"
+  echo "Usage: $0 {-crf [20]|-fps [default]|-highcolor} input output"
+  exit 1
+fi
+
+# Example command line, tested to work with complex video:
+# ffmpeg -i M22-1646.mov -c:v libx265 -tag:v hvc1 -crf 20 -pix_fmt yuv420p10le -filter:v fps=30 -c:a aac -ac 2 M22-16461.mp4
+
+while [ "$1" ]; do
+  case "$1" in
+    -crf)
+      OPTS:="${OPTS} -crf $2"
+      shift
+      ;;
+    -fps)
+      OPTS:="${OPTS} -filter:v -fps $2"
+      ;;
+    -highcolor)
+      OPTS:="${OPTS} -pix_fmt yuv420p10le"
+      ;;
+  esac
+  shift
+  ffmpeg -i $1 -c:v libx265 -tag:v hvc1 "$OPTS" -c:a aac -ac 2 $2
+done
