@@ -9,6 +9,49 @@ fi
 
 # Example command line, tested to work with complex video:
 # ffmpeg -i M22-1646.mov -c:v libx265 -tag:v hvc1 -crf 20 -pix_fmt yuv420p10le -filter:v fps=30 -c:a aac -ac 2 M22-16461.mp4
+#
+# * To encode the video:
+#   - "-c:v libx265" to use x265's CPU encoder
+#   - "-c:v hevc_nvenc" or "-c:v h264_nvenc" to use NVENC
+#   - "-c:v hevc_videotoolbox" or "-c:v h264_videotoolbox" to use Apple's hardware encoder
+# * To make the video get recognized on Apple devices:
+#   - "-tag:v hvc1" is required for hevc video
+#   - some mentions "-bsf:v hevc_mp4toannexb" or "-bsf:v h264_mp4toannexb" is also preferable
+# * To enable CUDA decoders:
+#   - prefix "-vsync 0 -hwaccel cuda -hwaccel_output_format cuda -hwaccel_device 0"
+#     before any "-i" or "-c:v", "-c:a" options
+#   - 
+# * To control video quality:
+#   - "-crf 28" for libx265, smaller value is better quality and larger file size
+#   - "-rc:v vbr -tune hq -cq 28 -qmin 1 -qmax 99 -b:v 5m -maxrate:v:0 12m" on
+#     NVENC, the "-cq" value is correspondent to "-crf" of libx265, target
+#     bitrate is set to 5mbps and max to 12mbps (this needs to be adjusted for
+#     different cq value and resolution/depth)
+#   - use "-rc:v vbr_hq -cq..." on older cards
+#   - with NVENC, use "-preset p5 -multipass 2" along with "-c:v" options to use
+#     "slow" preset and 2-pass encoding
+#   - with NVENC, use "-bf 4 -b_ref_mode 1 -nonref_p 1" for improved B-frames
+#     processing (hevc only); alternatively use "-bf 0 -weighted_pred 1" to
+#     use Weighted prediction instead of B-frames
+#   - "-b:v 5000k" to use target bitrate mode
+# * To process 10bit video:
+#   - "-pix_fmt yuv420p10le" for libx265
+#   - "-profile main10 -pix_fmt p010le" for hevc_nvenc, note this might not be a
+#     complete configuration to make the encoder process correctly 
+# * To deal with audio tracks:
+#   - "-c:a copy" to copy the original tracks
+#   - "-c:a aac -ac 2" makes the audio to be stereo and AAC encoded
+#   - use "-c:a eac3" instead to better support multi-channel audio
+#   - some mentions '-filter_complex "channelmap=channel_layout=5.1" -c:a aac'
+#     might work for 5.1 AAC audio to be recognized correctly
+#   - "-b:c 128k" to specify 128k target bit rate
+#
+# Extract original metadata and save to new file
+# exiftool -TagsFromFile original.mov "-all:all>all:all" output.mov
+#
+# NVENC part is heavily based on the information from:
+# - https://trac.ffmpeg.org/wiki/HWAccelIntro
+# - https://superuser.com/a/1623636
 
 while [ "$1" ]; do
   case "$1" in
