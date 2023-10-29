@@ -17,7 +17,7 @@ for i in dpkg-architecture pbuilder pigz; do
     fi
 done
 
-for i in debootstrap qemu-debootstrap; do
+for i in debootstrap; do
     if `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin which $i > /dev/null`; then
 	DEBOOTSTRAP=$i
     fi
