@@ -1,8 +1,8 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Forked from https://github.com/fivesheep/chnroutes/blob/master/chnroutes.py
 
 import re
-import urllib2
+import urllib.request, urllib.error, urllib.parse
 import sys
 import argparse
 import math
@@ -11,7 +11,7 @@ import textwrap
 def generate_iplist(source,metric):
     results = fetch_ip_data(source)
     rfile=open('iplist.txt','w')
-    print "Writing iplist.txt"
+    print("Writing iplist.txt")
     for ip,mask,mask2 in results:
         route_item="%s/%s\n"%(ip,mask2)
         rfile.write(route_item)
@@ -21,13 +21,13 @@ def generate_iplist(source,metric):
 def generate_ovpn(source,metric):
     results = fetch_ip_data(source)  
     rfile=open('routes.txt','w')
-    print "Writing routes.txt"
+    print("Writing routes.txt")
     for ip,mask,_ in results:
         route_item="route %s %s net_gateway %d\n"%(ip,mask,metric)
         rfile.write(route_item)
     rfile.close()
-    print "Usage: Append the content of the newly created routes.txt to your openvpn config file," \
-          " and also add 'max-routes %d', which takes a line, to the head of the file." % (len(results)+20)
+    print("Usage: Append the content of the newly created routes.txt to your openvpn config file," \
+          " and also add 'max-routes %d', which takes a line, to the head of the file." % (len(results)+20))
 
 
 def generate_linux(source,metric):
@@ -71,8 +71,8 @@ def generate_linux(source,metric):
     downfile.write('rm /tmp/vpn_oldgw\n')
 
 
-    print "For pptp only, please copy the file ip-pre-up to the folder/etc/ppp," \
-          "and copy the file ip-down to the folder /etc/ppp/ip-down.d."
+    print("For pptp only, please copy the file ip-pre-up to the folder/etc/ppp," \
+          "and copy the file ip-down to the folder /etc/ppp/ip-down.d.")
 
 def generate_mac(source,metric):
     results=fetch_ip_data(source)
@@ -125,8 +125,8 @@ def generate_mac(source,metric):
     upfile.close()
     downfile.close()
     
-    print "For pptp on mac only, please copy ip-up and ip-down to the /etc/ppp folder," \
-          "don't forget to make them executable with the chmod command."
+    print("For pptp on mac only, please copy ip-up and ip-down to the /etc/ppp folder," \
+          "don't forget to make them executable with the chmod command.")
 
 def generate_win(source,metric):
     results = fetch_ip_data(source)  
@@ -160,8 +160,8 @@ def generate_win(source,metric):
 #    down_vbs_wrapper.write('Set objShell = CreateObject("Wscript.shell")\ncall objShell.Run("vpndown.bat",0,FALSE)')
 #    down_vbs_wrapper.close()
     
-    print "For pptp on windows only, run vpnup.bat before dialing to vpn," \
-          "and run vpndown.bat after disconnected from the vpn."
+    print("For pptp on windows only, run vpnup.bat before dialing to vpn," \
+          "and run vpndown.bat after disconnected from the vpn.")
 
 def generate_android(source,metric):
     results = fetch_ip_data(source)
@@ -198,13 +198,13 @@ def generate_android(source,metric):
     upfile.close()
     downfile.close()
     
-    print "Old school way to call up/down script from openvpn client. " \
-          "use the regular openvpn 2.1 method to add routes if it's possible"
+    print("Old school way to call up/down script from openvpn client. " \
+          "use the regular openvpn 2.1 method to add routes if it's possible")
 
 
 def fetch_ip_data(source):
     #fetch data from apnic
-    print "Fetching data, please wait..."
+    print("Fetching data, please wait...")
     url_list={ 'arin':r'http://ftp.apnic.net/apnic/stats/apnic/delegated-apnic-latest',
                'apnic':r'http://ftp.apnic.net/stats/apnic/delegated-apnic-latest',
                'lacnic':r'ftp://ftp.lacnic.net/pub/stats/lacnic/delegated-lacnic-extended-latest',
@@ -213,7 +213,7 @@ def fetch_ip_data(source):
 
     #url=r'http://ftp.apnic.net/apnic/stats/apnic/delegated-apnic-latest'
     url=url_list[source]
-    data=urllib2.urlopen(url).read()
+    data=urllib.request.urlopen(url).read().decode()
     
     cnregex=re.compile(r'[a-zA-Z]{4,7}\|cn\|ipv4\|[0-9\.]+\|[0-9]+\|[0-9]+\|a.*',re.IGNORECASE)
     cndata=cnregex.findall(data)
@@ -282,5 +282,5 @@ if __name__=='__main__':
     elif args.platform.lower() == 'android':
         generate_android(args.source, args.metric)
     else:
-        print>>sys.stderr, "Platform %s is not supported."%args.platform
+        print("Platform %s is not supported."%args.platform, file=sys.stderr)
         exit(1)
