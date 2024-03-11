@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import subprocess
 import json
@@ -11,10 +11,11 @@ def retrive_google_address():
 	try:
 		import dns.resolver
 		try:
-			answer = dns.resolver.query('_netblocks.google.com', 'TXT')
+			answer = dns.resolver.resolve('_netblocks.google.com', 'TXT')
+
 		except dns.resolver.NoAnswer:
 			raise NoAnswer
-		results = answer[0].strings[0].replace("ip4:","").split(" ")
+		results = answer[0].strings[0].decode().replace("ip4:","").split(" ")
 		results = results[2:len(results)-1]
 
 	except(ImportError, NoAnswer):
