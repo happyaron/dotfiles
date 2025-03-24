@@ -59,6 +59,16 @@ if ! [ -d $BASEDIR/base ]; then
     mkdir -p $BASEDIR/base
 fi
 
+if ! [ -d $BASEDIR/deps ]; then
+    printf "W: $BASEDIR/deps does not exist, creating.\n" 1>&2
+    mkdir -p $BASEDIR/deps
+fi
+
+if ! [ -d $BASEDIR/hooks ]; then
+    printf "W: $BASEDIR/hooks does not exist, creating.\n" 1>&2
+    mkdir -p $BASEDIR/hooks
+fi
+
 for i in logs result; do
     if ! [ -d $BASEDIR/$i/$DIST-$DEB_TARGET_ARCH ]; then
         printf "W: Directory $BASEDIR/$i/$DIST-$DEB_TARGET_ARCH does not exist, creating.\n" 1>&2
@@ -136,6 +146,8 @@ COMMON_ARGS="--override-config \
     --architecture $DEB_TARGET_ARCH \
     --distribution $DISTRO \
     --configfile $BASEDIR/etc/$DIST-$DEB_TARGET_ARCH \
+    --hookdir $BASEDIR/hooks \
+    --bindmounts $BASEDIR/deps \
     --basetgz $BASEDIR/base/$DIST-$DEB_TARGET_ARCH-base.tgz"
 
 if [ "$PROCEED" = "true" ]; then

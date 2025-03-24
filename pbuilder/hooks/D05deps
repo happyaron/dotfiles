@@ -1,0 +1,7 @@
+DEPSPATH="$HOME/pbuilder/deps"
+if [ -d "$DEPSPATH" ] ; then
+        apt-get install --assume-yes apt-utils
+        ( cd "$DEPSPATH"; apt-ftparchive packages . > Packages )
+        echo "deb [trusted=yes] file://$DEPSPATH ./" >> /etc/apt/sources.list
+        apt-get update
+fi
