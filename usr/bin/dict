@@ -1,102 +1,196 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 # -*- coding: UTF-8 -*-
-import sys, urllib2, optparse, os
-try:
-    import xml.etree.ElementTree as ElementTree # in python >=2.5
-except ImportError:
+import sys
+import urllib.request
+import urllib.error
+import optparse
+import os
+import xml.etree.ElementTree as ElementTree
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.WARNING, format='%(levelname)s: %(message)s')
+logger = logging.getLogger(__name__)
+
+def parse_dict(xml_content):
+    """Parse dictionary XML response and extract word translations."""
     try:
-        import cElementTree as ElementTree # effbot's C module
-    except ImportError:
+        tree = ElementTree.fromstring(xml_content)
+        word_element = tree.find('original-query')
+        word = word_element.text if word_element is not None else "Unknown"
+        
+        translist = []
+        
+        # Try to get translations from web-translation section
+        web_translations = tree.findall('.//web-translation')
+        for web_trans in web_translations:
+            key_element = web_trans.find('key')
+            key = key_element.text if key_element is not None else "Unknown"
+            
+            temp = []
+            for trans in web_trans.findall('trans'):
+                value_element = trans.find('value')
+                if value_element is not None and value_element.text:
+                    temp.append(value_element.text)
+            
+            if temp:  # Only add if we have translations
+                translist.append([key, temp])
+        
+        # If no web translations found, try custom-translation section
+        if not translist:
+            customtrans = tree.findall('custom-translation')
+            for node in customtrans:
+                source_element = node.find('source/name')
+                source_name = source_element.text if source_element is not None else "Unknown Source"
+                
+                temp = []
+                for item in node.findall('.//translation/content'):
+                    if item.text:
+                        temp.append(item.text)
+                
+                if temp:  # Only add if we have translations
+                    translist.append([source_name, temp])
+        
+        return word, translist
+    except ElementTree.ParseError as e:
+        logger.error(f"Failed to parse dictionary XML: {e}")
+        return "Parse Error", []
+    except Exception as e:
+        logger.error(f"Unexpected error in parse_dict: {e}")
+        return "Error", []
+
+def parse_sentence(xml_content):
+    """Parse sentence XML response and extract example sentences."""
+    try:
+        tree = ElementTree.fromstring(xml_content)
+        senlist = []
+        
+        for node in tree.findall('.//example-sentences/sentence-pair'):
+            sent_element = node.find('sentence')
+            trans_element = node.find('sentence-translation')
+            
+            sent = sent_element.text if sent_element is not None else None
+            trans = trans_element.text if trans_element is not None else None
+            
+            if trans and sent:
+                senlist.append([sent, trans])
+                
+        return senlist
+    except ElementTree.ParseError as e:
+        logger.error(f"Failed to parse sentence XML: {e}")
+        return []
+    except Exception as e:
+        logger.error(f"Unexpected error in parse_sentence: {e}")
+        return []
+
+def fetch_url(url, timeout=10):
+    """Fetch content from URL with error handling and timeout."""
+    try:
+        request = urllib.request.Request(url)
+        request.add_header('User-Agent', 'Mozilla/5.0 (compatible; DictClient/1.0)')
+        response = urllib.request.urlopen(request, timeout=timeout)
+        return response.read()
+    except urllib.error.HTTPError as e:
+        logger.error(f"HTTP Error {e.code}: {e.reason} for URL {url}")
+        return None
+    except urllib.error.URLError as e:
+        logger.error(f"URL Error: {e.reason} for URL {url}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error fetching {url}: {e}")
+        return None
+
+def text_to_speech(word):
+    """Attempt to pronounce the word using available TTS engines."""
+    # Try espeak first
+    if os.path.exists('/usr/bin/espeak'):
         try:
-            # effbot's pure Python module
-            import elementtree.ElementTree as ElementTree 
-        except ImportError:
-            try:
-                # ElementTree API using libxml2
-                import lxml.etree as ElementTree 
-            except ImportError:
-                import warnings
-                warnings.warn("could not import ElementTree "
-                              "(http://effbot.org/zone/element-index.htm)")
+            os.system(f'espeak -ven+13 "{word}" &>/dev/null &')
+        except Exception as e:
+            logger.warning(f"Failed to use espeak: {e}")
+    # Try festival as fallback
+    elif os.path.exists('/usr/bin/festival'):
+        try:
+            os.system(f'echo "{word}" | festival --tts &>/dev/null &')
+        except Exception as e:
+            logger.warning(f"Failed to use festival: {e}")
 
-def parseDict(xml):
-    tree = ElementTree.fromstring(xml)
-    word = tree.find('original-query').text
-    customtrans = tree.findall('custom-translation')
-    translist = []
-    for node in customtrans:
-        temp =[]
-        for item in deepFindAll(node,'translation/content'):
-            temp.append(item.text)
-        translist.append([node.find('source/name').text,temp])
-    return word, translist
-
-def parseSentence(xml):
-    tree = ElementTree.fromstring(xml)
-    senlist = []
-    for node in deepFindAll(tree,'example-sentences/sentence-pair'):
-        sent = node.find('sentence').text
-        trans = node.find('sentence-translation').text
-        if trans and sent:  senlist.append([sent,trans ])
-    return senlist
-
-def deepFindAll(element, tag):
-    if type(tag) == type(''):       tag = tag.split('/')
-    if tag == []:        return  [element]
-    if len(tag) == 1:
-        elist = []
-        findres = element.findall(tag[0])
-        if findres:     elist.extend(findres)
-        for node in element:
-            elist.extend(deepFindAll(node, tag[0]))
-        return elist
-    else:
-        sublist = deepFindAll(element, tag[0])
-        return deepFindAll(element, tag[1:])
-
-if __name__=='__main__':
+def main():
     parser = optparse.OptionParser()
-    parser.add_option('-w', dest='word',action='store_true',
-            default=False, help='print the translation of the word.')
-    parser.add_option('-s', dest='sent',action='store_true',
-            default=False, help='print sample sentences.')
+    parser.add_option('-w', dest='word', action='store_true',
+                      default=False, help='print the translation of the word.')
+    parser.add_option('-s', dest='sent', action='store_true',
+                      default=False, help='print sample sentences.')
+    parser.add_option('-v', dest='verbose', action='store_true',
+                      default=False, help='enable verbose logging.')
+    
     options, args = parser.parse_args(sys.argv[1:])
-    #test if the string contains chinese
-    if ' '.join(args).isalpha():
-        #os.system('echo %s |festival --tts' %' '.join(args))
-        # espeak cannot use pulseaudio on ubuntu now, custom build rescued me
-        os.system('test -x /usr/bin/espeak && espeak -ven+13 %s &>/dev/null' %' '.join(args))
-    #get word translation
-    xml1= urllib2.urlopen("http://dict.yodao.com/search?keyfrom=dict.python&q=" + '+'.join(args) + "&xmlDetail=true&doctype=xml").read()
-    word, translist = parseDict(xml1)
-    #get sample sentences
-    xml2= urllib2.urlopen("http://dict.yodao.com/search?keyfrom=dict.python&q=lj:" + '+'.join(args) + "&xmlDetail=true&doctype=xml").read()
-    senlist = parseSentence(xml2)
-    #define colors
-    BOLD='\033[1m'
-    DEFAULT='\033[m'
-    UNDERLINE='\033[4m'
-    MAGENTA='\033[35m'
-    YELLOW='\033[33m'
-    GREEN='\033[32m'
-    RED='\033[31m'
-    WHITE='\033[37m'
-    BGWHITE='\033[47m'
-    BLUE='\033[34m'
+    
+    if options.verbose:
+        logger.setLevel(logging.INFO)
+    
+    if not args:
+        parser.print_help()
+        return 1
+    
+    search_term = ' '.join(args)
+    
+    # Try to pronounce the word if it's alphabetic
+    if search_term.replace(' ', '').isalpha():
+        text_to_speech(search_term)
+    
+    # Define colors
+    BOLD = '\033[1m'
+    DEFAULT = '\033[m'
+    UNDERLINE = '\033[4m'
+    MAGENTA = '\033[35m'
+    YELLOW = '\033[33m'
+    GREEN = '\033[32m'
+    RED = '\033[31m'
+    WHITE = '\033[37m'
+    BGWHITE = '\033[47m'
+    BLUE = '\033[34m'
+    
+    # Get word translation
+    dict_url = f"http://dict.yodao.com/search?keyfrom=dict.python&q={'+'.join(args)}&xmlDetail=true&doctype=xml"
+    dict_xml = fetch_url(dict_url)
+    
+    if dict_xml:
+        word, translist = parse_dict(dict_xml)
+    else:
+        word, translist = "Error", []
+    
+    # Get sample sentences
+    sent_url = f"http://dict.yodao.com/search?keyfrom=dict.python&q=lj:{'+'.join(args)}&xmlDetail=true&doctype=xml"
+    sent_xml = fetch_url(sent_url)
+    
+    if sent_xml:
+        senlist = parse_sentence(sent_xml)
+    else:
+        senlist = []
+    
+    # Display results
     if options.word:
-        print RED+BOLD+word+DEFAULT
+        print(RED + BOLD + word + DEFAULT)
         for item in translist:
-            print MAGENTA+BGWHITE+item[0]+DEFAULT +': '\
-                +GREEN+BOLD+ '; '.join(item[1]) + DEFAULT
+            print(MAGENTA + BGWHITE + item[0] + DEFAULT + ': ' +
+                  GREEN + BOLD + '; '.join(item[1]) + DEFAULT)
+    
     if options.sent:
         for item in senlist:
-            print item[0].replace('<b>', YELLOW+BOLD).replace('</b>', DEFAULT)
-            print BLUE+BOLD+item[1]+DEFAULT
+            print(item[0].replace('<b>', YELLOW + BOLD).replace('</b>', DEFAULT))
+            print(BLUE + BOLD + item[1] + DEFAULT)
+    
     if not options.word and not options.sent:
-        print RED+BOLD+word+DEFAULT
+        print(RED + BOLD + word + DEFAULT)
         for item in translist:
-            print MAGENTA+BGWHITE+item[0]+DEFAULT +': '\
-                +GREEN+BOLD+ '; '.join(item[1]) + DEFAULT
+            print(MAGENTA + BGWHITE + item[0] + DEFAULT + ': ' +
+                  GREEN + BOLD + '; '.join(item[1]) + DEFAULT)
         for item in senlist[:7]:
-            print item[0].replace('<b>', YELLOW+BOLD).replace('</b>', DEFAULT)
-            print BLUE+BOLD+item[1]+DEFAULT 
+            print(item[0].replace('<b>', YELLOW + BOLD).replace('</b>', DEFAULT))
+            print(BLUE + BOLD + item[1] + DEFAULT)
+    
+    return 0
+
+if __name__ == '__main__':
+    sys.exit(main())
