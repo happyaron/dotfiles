@@ -1,286 +1,425 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Forked from https://github.com/fivesheep/chnroutes/blob/master/chnroutes.py
 
-import re
-import urllib2
-import sys
+"""Generate platform-specific VPN routing scripts from RIR delegation data.
+
+Fetches IP allocation data from regional internet registries (APNIC, ARIN,
+LACNIC, RIPE NCC, AFRINIC) and generates route add/delete scripts for
+various platforms: Linux, macOS, Windows, Android, OpenVPN, or plain IP lists.
+"""
+
 import argparse
 import math
+import os
+import re
+import sys
 import textwrap
+import urllib.request
+from urllib.error import HTTPError, URLError
 
-def generate_iplist(source,metric):
-    results = fetch_ip_data(source)
-    rfile=open('iplist.txt','w')
-    print "Writing iplist.txt"
-    for ip,mask,mask2 in results:
-        route_item="%s/%s\n"%(ip,mask2)
-        rfile.write(route_item)
-    rfile.close()
+# Regex for validating IPv4 addresses before writing to shell scripts.
+_IP_RE = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
 
+# Regex for validating dotted-decimal subnet masks.
+_MASK_RE = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
 
-def generate_ovpn(source,metric):
-    results = fetch_ip_data(source)  
-    rfile=open('routes.txt','w')
-    print "Writing routes.txt"
-    for ip,mask,_ in results:
-        route_item="route %s %s net_gateway %d\n"%(ip,mask,metric)
-        rfile.write(route_item)
-    rfile.close()
-    print "Usage: Append the content of the newly created routes.txt to your openvpn config file," \
-          " and also add 'max-routes %d', which takes a line, to the head of the file." % (len(results)+20)
+# Data source URLs keyed by registry name.
+SOURCE_URLS = {
+    "arin": "http://ftp.apnic.net/apnic/stats/apnic/delegated-apnic-latest",
+    "apnic": "http://ftp.apnic.net/stats/apnic/delegated-apnic-latest",
+    "lacnic": "https://ftp.lacnic.net/pub/stats/lacnic/delegated-lacnic-extended-latest",
+    "ripecc": "https://ftp.ripe.net/pub/stats/ripencc/delegated-ripencc-extended-latest",
+    "afrinic": "http://ftp.afrinic.net/pub/stats/afrinic/delegated-afrinic-extended-latest",
+}
 
 
-def generate_linux(source,metric):
-    results = fetch_ip_data(source)
-    upscript_header=textwrap.dedent("""\
+def fetch_ip_data(source, country=None):
+    """Fetch and parse IP delegation data from a regional internet registry.
+
+    Args:
+        source: Registry name (key into SOURCE_URLS).
+        country: Optional two-letter country code to filter by.
+                 None means return all countries.
+
+    Returns:
+        List of (ip, dotted_mask, cidr_prefix_len) tuples.
+    """
+    print("Fetching data, please wait...")
+    url = SOURCE_URLS[source]
+
+    try:
+        data = urllib.request.urlopen(url, timeout=30).read().decode("utf-8")
+    except HTTPError as exc:
+        print(f"HTTP error fetching {url}: {exc.code} {exc.reason}", file=sys.stderr)
+        sys.exit(1)
+    except URLError as exc:
+        print(f"Network error fetching {url}: {exc.reason}", file=sys.stderr)
+        sys.exit(1)
+    except OSError as exc:
+        print(f"Error fetching {url}: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    # Build regex: optionally filter by country code.
+    if country:
+        cc_pattern = re.escape(country.upper())
+    else:
+        cc_pattern = r"[a-zA-Z]{2}"
+    cn_regex = re.compile(
+        rf"[a-zA-Z]{{4,7}}\|{cc_pattern}\|ipv4\|[0-9.]+\|[0-9]+\|[0-9]+\|a.*",
+        re.IGNORECASE,
+    )
+    cn_data = cn_regex.findall(data)
+
+    results = []
+    for item in cn_data:
+        unit_items = item.split("|")
+        starting_ip = unit_items[3]
+        num_ip = int(unit_items[4])
+
+        imask = 0xFFFFFFFF ^ (num_ip - 1)
+        imask_hex = f"{imask:08x}"
+        mask_octets = [
+            int(imask_hex[0:2], 16),
+            int(imask_hex[2:4], 16),
+            int(imask_hex[4:6], 16),
+            int(imask_hex[6:8], 16),
+        ]
+        dotted_mask = f"{mask_octets[0]}.{mask_octets[1]}.{mask_octets[2]}.{mask_octets[3]}"
+
+        # CIDR prefix length.
+        cidr = 32 - int(math.log(num_ip, 2))
+
+        # Sanitize: reject entries that don't look like valid IPs/masks.
+        if not _IP_RE.match(starting_ip):
+            continue
+        if not _MASK_RE.match(dotted_mask):
+            continue
+
+        results.append((starting_ip, dotted_mask, cidr))
+
+    return results
+
+
+def _write_route_files(output_dir, results, files_spec, post_message=None):
+    """Write one or more route script files from a common specification.
+
+    This is the shared core that all platform generators delegate to,
+    eliminating duplication across the six generate_* functions.
+
+    Args:
+        output_dir: Directory to write files into.
+        results: List of (ip, dotted_mask, cidr) tuples.
+        files_spec: List of dicts, each with keys:
+            - filename: output filename
+            - header: string written at the top of the file
+            - line_fmt: callable(ip, dotted_mask, cidr) -> str for each route
+            - footer: optional string appended after all routes
+        post_message: Optional message to print after writing.
+    """
+    for spec in files_spec:
+        filepath = os.path.join(output_dir, spec["filename"])
+        print(f"Writing {filepath}")
+        with open(filepath, "w") as fh:
+            fh.write(spec["header"])
+            fh.write("\n")
+            for ip, mask, cidr in results:
+                fh.write(spec["line_fmt"](ip, mask, cidr))
+            if "footer" in spec:
+                fh.write(spec["footer"])
+    if post_message:
+        print(post_message)
+
+
+def generate_iplist(source, metric, output_dir, country):
+    """Generate a plain text IP list (CIDR notation)."""
+    results = fetch_ip_data(source, country)
+    _write_route_files(
+        output_dir,
+        results,
+        [
+            {
+                "filename": "iplist.txt",
+                "header": "",
+                "line_fmt": lambda ip, mask, cidr: f"{ip}/{cidr}\n",
+            }
+        ],
+    )
+
+
+def generate_ovpn(source, metric, output_dir, country):
+    """Generate an OpenVPN route fragment."""
+    results = fetch_ip_data(source, country)
+    _write_route_files(
+        output_dir,
+        results,
+        [
+            {
+                "filename": "routes.txt",
+                "header": "",
+                "line_fmt": lambda ip, mask, cidr: f"route {ip} {mask} net_gateway {metric}\n",
+            }
+        ],
+        post_message=(
+            "Usage: Append the content of the newly created routes.txt to your "
+            "openvpn config file, and also add 'max-routes "
+            f"{len(results) + 20}', which takes a line, to the head of the file."
+        ),
+    )
+
+
+def generate_linux(source, metric, output_dir, country):
+    """Generate Linux pptp ip-pre-up / ip-down scripts."""
+    results = fetch_ip_data(source, country)
+
+    upscript_header = textwrap.dedent("""\
     #!/bin/bash
     export PATH="/bin:/sbin:/usr/sbin:/usr/bin"
-    
-    OLDGW=`ip route show | grep '^default' | sed -e 's/default via \\([^ ]*\\).*/\\1/'`
-    
-    if [ $OLDGW == '' ]; then
+
+    OLDGW=$(ip route show | grep '^default' | sed -e 's/default via \\([^ ]*\\).*/\\1/')
+
+    if [ -z "$OLDGW" ]; then
         exit 0
     fi
-    
+
     if [ ! -e /tmp/vpn_oldgw ]; then
-        echo $OLDGW > /tmp/vpn_oldgw
+        echo "$OLDGW" > /tmp/vpn_oldgw
     fi
-    
+
     """)
-    
-    downscript_header=textwrap.dedent("""\
+
+    downscript_header = textwrap.dedent("""\
     #!/bin/bash
     export PATH="/bin:/sbin:/usr/sbin:/usr/bin"
-    
-    OLDGW=`cat /tmp/vpn_oldgw`
-    
+
+    OLDGW=$(cat /tmp/vpn_oldgw)
+
     """)
-    
-    upfile=open('ip-pre-up','w')
-    downfile=open('ip-down','w')
-    
-    upfile.write(upscript_header)
-    upfile.write('\n')
-    downfile.write(downscript_header)
-    downfile.write('\n')
-    
-    for ip,mask,_ in results:
-        upfile.write('route add -net %s netmask %s gw $OLDGW\n'%(ip,mask))
-        downfile.write('route del -net %s netmask %s\n'%(ip,mask))
 
-    downfile.write('rm /tmp/vpn_oldgw\n')
+    _write_route_files(
+        output_dir,
+        results,
+        [
+            {
+                "filename": "ip-pre-up",
+                "header": upscript_header,
+                "line_fmt": lambda ip, mask, cidr: f'route add -net {ip} netmask {mask} gw "$OLDGW"\n',
+            },
+            {
+                "filename": "ip-down",
+                "header": downscript_header,
+                "line_fmt": lambda ip, mask, cidr: f"route del -net {ip} netmask {mask}\n",
+                "footer": "rm /tmp/vpn_oldgw\n",
+            },
+        ],
+        post_message=(
+            "For pptp only, please copy the file ip-pre-up to the folder "
+            "/etc/ppp, and copy the file ip-down to the folder /etc/ppp/ip-down.d."
+        ),
+    )
 
 
-    print "For pptp only, please copy the file ip-pre-up to the folder/etc/ppp," \
-          "and copy the file ip-down to the folder /etc/ppp/ip-down.d."
+def generate_mac(source, metric, output_dir, country):
+    """Generate macOS pptp ip-up / ip-down scripts."""
+    results = fetch_ip_data(source, country)
 
-def generate_mac(source,metric):
-    results=fetch_ip_data(source)
-    
-    upscript_header=textwrap.dedent("""\
+    upscript_header = textwrap.dedent("""\
     #!/bin/sh
     export PATH="/bin:/sbin:/usr/sbin:/usr/bin"
-    
-    OLDGW=`netstat -nr | grep '^default' | grep -v 'ppp' | sed 's/default *\\([0-9\.]*\\) .*/\\1/' | awk '{if($1){print $1}}'`
+
+    OLDGW=$(netstat -nr | grep '^default' | grep -v 'ppp' | sed 's/default *\\([0-9.]*\\) .*/\\1/' | awk '{if($1){print $1}}')
 
     if [ ! -e /tmp/pptp_oldgw ]; then
         echo "${OLDGW}" > /tmp/pptp_oldgw
     fi
-    
+
     dscacheutil -flushcache
 
     route add 10.0.0.0/8 "${OLDGW}"
     route add 172.16.0.0/12 "${OLDGW}"
     route add 192.168.0.0/16 "${OLDGW}"
     """)
-    
-    downscript_header=textwrap.dedent("""\
+
+    downscript_header = textwrap.dedent("""\
     #!/bin/sh
     export PATH="/bin:/sbin:/usr/sbin:/usr/bin"
-    
+
     if [ ! -e /tmp/pptp_oldgw ]; then
             exit 0
     fi
-    
-    ODLGW=`cat /tmp/pptp_oldgw`
+
+    OLDGW=$(cat /tmp/pptp_oldgw)
 
     route delete 10.0.0.0/8 "${OLDGW}"
     route delete 172.16.0.0/12 "${OLDGW}"
     route delete 192.168.0.0/16 "${OLDGW}"
     """)
-    
-    upfile=open('ip-up','w')
-    downfile=open('ip-down','w')
-    
-    upfile.write(upscript_header)
-    upfile.write('\n')
-    downfile.write(downscript_header)
-    downfile.write('\n')
-    
-    for ip,_,mask in results:
-        upfile.write('route add %s/%s "${OLDGW}"\n'%(ip,mask))
-        downfile.write('route delete %s/%s ${OLDGW}\n'%(ip,mask))
-    
-    downfile.write('\n\nrm /tmp/pptp_oldgw\n')
-    upfile.close()
-    downfile.close()
-    
-    print "For pptp on mac only, please copy ip-up and ip-down to the /etc/ppp folder," \
-          "don't forget to make them executable with the chmod command."
 
-def generate_win(source,metric):
-    results = fetch_ip_data(source)  
+    _write_route_files(
+        output_dir,
+        results,
+        [
+            {
+                "filename": "ip-up",
+                "header": upscript_header,
+                "line_fmt": lambda ip, mask, cidr: f'route add {ip}/{cidr} "${{OLDGW}}"\n',
+            },
+            {
+                "filename": "ip-down",
+                "header": downscript_header,
+                "line_fmt": lambda ip, mask, cidr: f'route delete {ip}/{cidr} "${{OLDGW}}"\n',
+                "footer": "\n\nrm /tmp/pptp_oldgw\n",
+            },
+        ],
+        post_message=(
+            "For pptp on mac only, please copy ip-up and ip-down to the "
+            "/etc/ppp folder, don't forget to make them executable with the chmod command."
+        ),
+    )
 
-    upscript_header=textwrap.dedent("""@echo off
+
+def generate_win(source, metric, output_dir, country):
+    """Generate Windows vpnup.bat / vpndown.bat scripts."""
+    results = fetch_ip_data(source, country)
+
+    upscript_header = textwrap.dedent("""\
+    @echo off
     for /F "tokens=3" %%* in ('route print ^| findstr "\\<0.0.0.0\\>"') do set "gw=%%*"
-    
-    """)
-    
-    upfile=open('vpnup.bat','w')
-    downfile=open('vpndown.bat','w')
-    
-    upfile.write(upscript_header)
-    upfile.write('\n')
-    upfile.write('ipconfig /flushdns\n\n')
-    
-    downfile.write("@echo off")
-    downfile.write('\n')
-    
-    for ip,mask,_ in results:
-        upfile.write('route add %s mask %s %s metric %d\n'%(ip,mask,"%gw%",metric))
-        downfile.write('route delete %s\n'%(ip))
-    
-    upfile.close()
-    downfile.close()
-    
-#    up_vbs_wrapper=open('vpnup.vbs','w')
-#    up_vbs_wrapper.write('Set objShell = CreateObject("Wscript.shell")\ncall objShell.Run("vpnup.bat",0,FALSE)')
-#    up_vbs_wrapper.close()
-#    down_vbs_wrapper=open('vpndown.vbs','w')
-#    down_vbs_wrapper.write('Set objShell = CreateObject("Wscript.shell")\ncall objShell.Run("vpndown.bat",0,FALSE)')
-#    down_vbs_wrapper.close()
-    
-    print "For pptp on windows only, run vpnup.bat before dialing to vpn," \
-          "and run vpndown.bat after disconnected from the vpn."
 
-def generate_android(source,metric):
-    results = fetch_ip_data(source)
-    
-    upscript_header=textwrap.dedent("""\
+    """)
+
+    _write_route_files(
+        output_dir,
+        results,
+        [
+            {
+                "filename": "vpnup.bat",
+                "header": upscript_header + "\nipconfig /flushdns\n\n",
+                "line_fmt": lambda ip, mask, cidr: f"route add {ip} mask {mask} %gw% metric {metric}\n",
+            },
+            {
+                "filename": "vpndown.bat",
+                "header": "@echo off\n",
+                "line_fmt": lambda ip, mask, cidr: f"route delete {ip}\n",
+            },
+        ],
+        post_message=(
+            "For pptp on windows only, run vpnup.bat before dialing to vpn, "
+            "and run vpndown.bat after disconnected from the vpn."
+        ),
+    )
+
+
+def generate_android(source, metric, output_dir, country):
+    """Generate Android vpnup.sh / vpndown.sh scripts."""
+    results = fetch_ip_data(source, country)
+
+    upscript_header = textwrap.dedent("""\
     #!/bin/sh
     alias nestat='/system/xbin/busybox netstat'
     alias grep='/system/xbin/busybox grep'
     alias awk='/system/xbin/busybox awk'
     alias route='/system/xbin/busybox route'
-    
-    OLDGW=`netstat -rn | grep ^0\.0\.0\.0 | awk '{print $2}'`
-    
+
+    OLDGW=$(netstat -rn | grep '^0\\.0\\.0\\.0' | awk '{print $2}')
+
     """)
-    
-    downscript_header=textwrap.dedent("""\
+
+    downscript_header = textwrap.dedent("""\
     #!/bin/sh
     alias route='/system/xbin/busybox route'
-    
+
     """)
-    
-    upfile=open('vpnup.sh','w')
-    downfile=open('vpndown.sh','w')
-    
-    upfile.write(upscript_header)
-    upfile.write('\n')
-    downfile.write(downscript_header)
-    downfile.write('\n')
-    
-    for ip,mask,_ in results:
-        upfile.write('route add -net %s netmask %s gw $OLDGW\n'%(ip,mask))
-        downfile.write('route del -net %s netmask %s\n'%(ip,mask))
-    
-    upfile.close()
-    downfile.close()
-    
-    print "Old school way to call up/down script from openvpn client. " \
-          "use the regular openvpn 2.1 method to add routes if it's possible"
+
+    _write_route_files(
+        output_dir,
+        results,
+        [
+            {
+                "filename": "vpnup.sh",
+                "header": upscript_header,
+                "line_fmt": lambda ip, mask, cidr: f'route add -net {ip} netmask {mask} gw "$OLDGW"\n',
+            },
+            {
+                "filename": "vpndown.sh",
+                "header": downscript_header,
+                "line_fmt": lambda ip, mask, cidr: f"route del -net {ip} netmask {mask}\n",
+            },
+        ],
+        post_message=(
+            "Old school way to call up/down script from openvpn client. "
+            "use the regular openvpn 2.1 method to add routes if it's possible"
+        ),
+    )
 
 
-def fetch_ip_data(source):
-    #fetch data from apnic
-    print "Fetching data, please wait..."
-    url_list={ 'arin':r'http://ftp.apnic.net/apnic/stats/apnic/delegated-apnic-latest',
-               'apnic':r'http://ftp.apnic.net/stats/apnic/delegated-apnic-latest',
-               'lacnic':r'ftp://ftp.lacnic.net/pub/stats/lacnic/delegated-lacnic-extended-latest',
-               'ripecc':r'ftp://ftp.ripe.net/pub/stats/ripencc/delegated-ripencc-extended-latest',
-               'afrinic':r'http://ftp.afrinic.net/pub/stats/afrinic/delegated-afrinic-extended-latest'}
-
-    #url=r'http://ftp.apnic.net/apnic/stats/apnic/delegated-apnic-latest'
-    url=url_list[source]
-    data=urllib2.urlopen(url).read()
-    
-    cnregex=re.compile(r'[a-zA-Z]{4,7}\|[a-zA-Z]{2}\|ipv4\|[0-9\.]+\|[0-9]+\|[0-9]+\|a.*',re.IGNORECASE)
-    cndata=cnregex.findall(data)
-    
-    results=[]
-
-    for item in cndata:
-        unit_items=item.split('|')
-        starting_ip=unit_items[3]
-        num_ip=int(unit_items[4])
-        
-        imask=0xffffffff^(num_ip-1)
-        #convert to string
-        imask=hex(imask)[2:]
-        mask=[0]*4
-        mask[0]=imask[0:2]
-        mask[1]=imask[2:4]
-        mask[2]=imask[4:6]
-        mask[3]=imask[6:8]
-        
-        #convert str to int
-        mask=[ int(i,16 ) for i in mask]
-        mask="%d.%d.%d.%d"%tuple(mask)
-        
-        #mask in *nix format
-        mask2=32-int(math.log(num_ip,2))
-        
-        results.append((starting_ip,mask,mask2))
-         
-    return results
+# Dispatch dictionary mapping platform names to generator functions.
+PLATFORM_GENERATORS = {
+    "iplist": generate_iplist,
+    "openvpn": generate_ovpn,
+    "linux": generate_linux,
+    "mac": generate_mac,
+    "win": generate_win,
+    "android": generate_android,
+}
 
 
-if __name__=='__main__':
-    parser=argparse.ArgumentParser(description="Generate routing rules for vpn.")
-    parser.add_argument('-s','--source',
-                        dest='source',
-                        default='apnic',
-                        nargs='?',
-                        help="Data source, it can be arin, apnic, lacnic, ripe,"
-                        "afrinic. apnic by default.")
-    parser.add_argument('-p','--platform',
-                        dest='platform',
-                        default='iplist',
-                        nargs='?',
-                        help="Target platforms, it can be iplist, openvpn, mac, linux," 
-                        "win, android. iplist by default.")
-    parser.add_argument('-m','--metric',
-                        dest='metric',
-                        default=5,
-                        nargs='?',
-                        type=int,
-                        help="Metric setting for the route rules")
-    
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Generate routing rules for vpn.")
+    parser.add_argument(
+        "-s",
+        "--source",
+        dest="source",
+        default="apnic",
+        nargs="?",
+        help=(
+            "Data source, it can be arin, apnic, lacnic, ripecc, "
+            "afrinic. apnic by default."
+        ),
+    )
+    parser.add_argument(
+        "-p",
+        "--platform",
+        dest="platform",
+        default="iplist",
+        nargs="?",
+        help=(
+            "Target platforms, it can be iplist, openvpn, mac, linux, "
+            "win, android. iplist by default."
+        ),
+    )
+    parser.add_argument(
+        "-m",
+        "--metric",
+        dest="metric",
+        default=5,
+        nargs="?",
+        type=int,
+        help="Metric setting for the route rules",
+    )
+    parser.add_argument(
+        "--output-dir",
+        dest="output_dir",
+        default=".",
+        help="Output directory for generated files (default: current directory).",
+    )
+    parser.add_argument(
+        "--country",
+        dest="country",
+        default=None,
+        help=(
+            "Filter by two-letter country code (e.g. CN, US). "
+            "Default: all countries."
+        ),
+    )
+
     args = parser.parse_args()
-    
-    if args.platform.lower() == 'iplist':
-        generate_iplist(args.source, args.metric)
-    elif args.platform.lower() == 'openvpn':
-        generate_ovpn(args.source, args.metric)
-    elif args.platform.lower() == 'linux':
-        generate_linux(args.source, args.metric)
-    elif args.platform.lower() == 'mac':
-        generate_mac(args.source, args.metric)
-    elif args.platform.lower() == 'win':
-        generate_win(args.source, args.metric)
-    elif args.platform.lower() == 'android':
-        generate_android(args.source, args.metric)
-    else:
-        print>>sys.stderr, "Platform %s is not supported."%args.platform
-        exit(1)
+
+    # Ensure output directory exists.
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    platform = args.platform.lower()
+    generator = PLATFORM_GENERATORS.get(platform)
+    if generator is None:
+        print(f"Platform {args.platform} is not supported.", file=sys.stderr)
+        sys.exit(1)
+    generator(args.source, args.metric, args.output_dir, args.country)
