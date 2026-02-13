@@ -146,8 +146,19 @@ fi
 #generate_ip_list
 generate_ip_rules
 
-# Execute IP rules for real
-ip -force -batch $DIR_TXT/iproute.tmp || true
+# Backup current routing table before flush
+ROUTE_BACKUP=$(mktemp /tmp/route-backup.XXXXXX)
+ip route save table main > "$ROUTE_BACKUP"
+
+# Execute IP rules for real; restore from backup on failure
+if ! ip -force -batch $DIR_TXT/iproute.tmp; then
+	echo "ERROR: ip batch apply failed, restoring routes from backup."
+	ip route restore < "$ROUTE_BACKUP"
+	rm -f "$ROUTE_BACKUP"
+	exit 1
+fi
+rm -f "$ROUTE_BACKUP"
+
 ip route add 192.168.6.194/32 via 192.168.6.193 dev wg0 onlink
 #restore_default_route
 #restore_ip_ruleset
