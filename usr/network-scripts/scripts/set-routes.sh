@@ -21,15 +21,6 @@ SECONDSRC=192.168.253.116
 DIR_WORK=/root/scripts
 DIR_TXT=/root/routes
 
-if [ "$1" != "" ] && [ "$2" != "" ]; then
-	ROUTEGW_0=$1
-	ROUTEDEV_0=$2
-fi
-
-if [ "$5" = "LOCAL" ]; then
-	LOCAL_ONLY=yes;
-fi
-
 restore_default_route()
 {
     ip ro flush scope global
@@ -47,6 +38,22 @@ restore_ip_ruleset()
 	ip rule add from 10.11.89.0/24 lookup 200
 	ip rule add fwmark 201 lookup 201
 }
+
+case "$1" in
+    restore)
+      restore_default_route
+      exit
+      ;;
+esac
+
+if [ "$1" != "" ] && [ "$2" != "" ]; then
+	ROUTEGW_0=$1
+	ROUTEDEV_0=$2
+fi
+
+if [ "$5" = "LOCAL" ]; then
+	LOCAL_ONLY=yes;
+fi
 
 generate_ip_list ()
 {
@@ -99,15 +106,6 @@ generate_ip_rules ()
 }
 
 ## Execution starts here
-
-case $1 in
-    restore)
-      restore_default_route
-      exit
-      ;;
-    *)
-      ;;
-esac
 
 # Detect whether default network device is UP
 if ! ip a | grep $DEFAULTDEV | grep UP > /dev/null; then
