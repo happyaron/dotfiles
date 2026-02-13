@@ -149,6 +149,11 @@ fi
 #generate_ip_list
 generate_ip_rules
 
+if [ ! -s "$DIR_TXT/iproute.tmp" ]; then
+	echo "ERROR: $DIR_TXT/iproute.tmp is missing or empty after generate_ip_rules."
+	exit 1
+fi
+
 # Backup current routing table before flush
 ROUTE_BACKUP=$(mktemp /tmp/route-backup.XXXXXX)
 ip route save table main > "$ROUTE_BACKUP"
