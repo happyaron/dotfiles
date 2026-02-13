@@ -47,7 +47,7 @@ generate_ip_rules ()
     printf "ro flush scope global\nro add default via $ROUTEGW_0 dev $ROUTEDEV_0\n" > $DIR_TXT/iproute.tmp
 
     # Use default gw for following routes
-    cat $DIR_TXT/internel.txt $DIR_TXT/gateway.txt $DIR_TXT/chn.txt | \
+    cat $DIR_TXT/internal.txt $DIR_TXT/gateway.txt $DIR_TXT/chn.txt | \
       sed "s/^/ro add /;s/$/ via $DEFAULTGW dev $DEFAULTDEV/" >> $DIR_TXT/iproute.tmp
 
     # Always use ROUTEGW_1 for following routes
