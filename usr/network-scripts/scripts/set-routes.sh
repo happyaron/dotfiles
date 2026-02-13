@@ -97,7 +97,8 @@ generate_ip_rules ()
       sed "s/^/ro add /;s/$/ via $DEFAULTGW dev $DEFAULTDEV /" >> "$DIR_TXT/iproute.tmp"
 
     # Use default interface gw for chn routes
-    cat "$DIR_TXT/gateway.txt" "$DIR_TXT/chn.txt" "$DIR_TXT/dns-int.txt" | grep -v '#' | \
+    #cat "$DIR_TXT/gateway.txt" "$DIR_TXT/chn.txt" "$DIR_TXT/dns-int.txt" | grep -v '#' | \
+    cat "$DIR_TXT/gateway.txt" "$DIR_TXT/chn.txt" | grep -v '#' | \
       sed "s/^/ro add /;s/$/ via $DEFAULTGW dev $DEFAULTDEV src $DEFAULTSRC/" >> "$DIR_TXT/iproute.tmp"
 
     # Always use ROUTEGW_1 for following routes
@@ -146,7 +147,7 @@ else
     exit 1;
 fi
 
-#generate_ip_list
+generate_ip_list
 generate_ip_rules
 
 if [ ! -s "$DIR_TXT/iproute.tmp" ]; then
@@ -174,5 +175,5 @@ if [ -x "$DIR_WORK/set-pbr.sh" ]; then
 fi
 
 #service dnsmasq restart
-service smartdns restart
+#service smartdns restart
 rndc flush
