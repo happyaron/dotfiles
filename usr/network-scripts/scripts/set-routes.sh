@@ -1,5 +1,10 @@
 #!/bin/sh
+set -e
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+ROUTE_BACKUP=""
+cleanup() { [ -n "$ROUTE_BACKUP" ] && rm -f "$ROUTE_BACKUP"; true; }
+trap cleanup EXIT
 
 ROUTEGW_0=192.0.2.1
 ROUTEDEV_0=tun0
@@ -152,10 +157,8 @@ ip route save table main > "$ROUTE_BACKUP"
 if ! ip -force -batch $DIR_TXT/iproute.tmp; then
 	echo "ERROR: ip batch apply failed, restoring routes from backup."
 	ip route restore < "$ROUTE_BACKUP"
-	rm -f "$ROUTE_BACKUP"
 	exit 1
 fi
-rm -f "$ROUTE_BACKUP"
 
 ip route add 192.0.2.1/32 via 192.0.2.2 dev tun0 onlink
 #restore_default_route
