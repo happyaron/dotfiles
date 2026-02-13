@@ -10,20 +10,16 @@ DEB_TARGET_ARCH=$2
 OPERATION=$3
 DSCFILE=$4
 
-for i in dpkg-architecture pbuilder pigz; do
-    if ! `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin which $i > /dev/null`; then
-        printf "E: Required command \"$i\" not found.\n" 1>&2
+for i in dpkg-architecture pbuilder pigz debootstrap; do
+    if ! PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin command -v "$i" > /dev/null 2>&1; then
+        printf 'E: Required command "%s" not found.\n' "$i" 1>&2
         exit 1
     fi
 done
 
-for i in debootstrap; do
-    if `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin which $i > /dev/null`; then
-	DEBOOTSTRAP=$i
-    fi
-done
+DEBOOTSTRAP=debootstrap
 
-if ! `dpkg-architecture -a$DEB_TARGET_ARCH >/dev/null 2>&1`; then
+if ! dpkg-architecture -a"$DEB_TARGET_ARCH" >/dev/null 2>&1; then
     printf "E: \"$DEB_TARGET_ARCH\" is not a valid architecture.\n" 1>&2
     exit 1
 else
@@ -32,7 +28,7 @@ else
     DEB_TARGET_ARCH_BITS=`dpkg-architecture -a$DEB_TARGET_ARCH -qDEB_HOST_ARCH_BITS`
 fi
 
-unset $ARG
+unset ARG
 if [ $DEB_HOST_ARCH_BITS -gt $DEB_TARGET_ARCH_BITS ]; then
     ARG="$ARG linux32";
 elif [ $DEB_HOST_ARCH_BITS -lt $DEB_TARGET_ARCH_BITS ]; then
@@ -40,7 +36,7 @@ elif [ $DEB_HOST_ARCH_BITS -lt $DEB_TARGET_ARCH_BITS ]; then
     exit 1
 fi
 
-if `echo $DIST | grep "bpo$" > /dev/null`; then
+if echo "$DIST" | grep -q "bpo$"; then
 	DISTRO=`echo $DIST | sed 's/bpo$//'`
 else
     DISTRO=$DIST
@@ -121,14 +117,12 @@ else
     LOG=$BASEDIR/logs/$DIST-$DEB_TARGET_ARCH/${OPERATION}_${DATUM}.log
 fi
 
-# After this point, $@ is pointed to parameters after --.
-while [ -n "$1" ]; do
-    case "$1" in
-    --) shift
-        break;;
-    esac
+# Consume the 4 positional parameters already assigned above.
+shift 4 2>/dev/null || shift $#
+# If extra arguments are passed via --, strip the separator.
+if [ "${1:-}" = "--" ]; then
     shift
-done
+fi
 
 FUNC_PBUILDER_TMP() {
     if ! [ -d $PBUILDER_TMP ]; then
@@ -155,7 +149,7 @@ if [ "$PROCEED" = "true" ]; then
     $PBUILDER_CMD $COMMON_ARGS \
         --buildresult $BASEDIR/result/$DIST-$DEB_TARGET_ARCH \
         --logfile $LOG \
-        $@ $DSCFILE
+        "$@" $DSCFILE
 elif [ "$LOGIN" = "true" ]; then
     FUNC_PBUILDER_TMP
     $PBUILDER_CMD $COMMON_ARGS
