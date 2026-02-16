@@ -1,5 +1,6 @@
 #!/bin/sh
 set -e
+set -x
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 #LINKGW_0=192.0.2.6
@@ -18,8 +19,8 @@ LINKDEV_2=vpn1
 TEST_TARGET=8.8.4.4
 
 EXEC_SWITCH_CMD=/root/scripts/set-routes.sh
-EXEC_STATE_DATA=/root/scripts/link-mon.state
-EXEC_STATE_STAMP=/root/scripts/link-mon.stamp
+EXEC_STATE_DATA=/var/lib/link-mon/link-mon.state
+EXEC_STATE_STAMP=/var/lib/link-mon/link-mon.stamp
 
 probe_cmd(){
 	PROBE_OUTPUT=$(ping -q -w5 $1| grep "transmitted")
@@ -136,6 +137,9 @@ elif [ $PROBE_ALIVE -eq 2 ]; then
 else
 	ROUTING_MODE=NORMAL
 fi
+
+# Execute this manually, should be commented out at normal days
+#$EXEC_SWITCH_CMD $LINKGW_ACTIVE $LINKDEV_ACTIVE $LINKGW_BAKUP $LINKDEV_BAKUP $ROUTING_MODE
 
 if probe_cmd $TEST_TARGET 2>/dev/null; then
 	write_data $LINKGW_ACTIVE $LINKDEV_ACTIVE $LINKRTT_ACTIVE $LINKGW_BAKUP $LINKDEV_BAKUP $LINKRTT_BAKUP $ROUTING_MODE PASS
