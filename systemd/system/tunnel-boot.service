@@ -1,0 +1,13 @@
+[Unit]
+Description=IPv6 tunnels on eth1.100 (mytunnel ipip6)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/root/scripts/tunnel-boot.sh apply
+ExecStop=/root/scripts/tunnel-boot.sh teardown
+
+[Install]
+WantedBy=multi-user.target

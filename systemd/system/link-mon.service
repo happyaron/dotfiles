@@ -1,0 +1,21 @@
+[Unit]
+Description=WAN link health monitor and failover
+After=split-access.service wg-quick@tun0.service
+Wants=split-access.service wg-quick@tun0.service
+
+[Service]
+Type=oneshot
+ExecStart=/root/scripts/link-mon.sh
+
+# systemd creates /var/lib/link-mon/ owned by root
+StateDirectory=link-mon
+
+# Hardening (ProtectHome=no because set-routes.sh writes to /root/routes/)
+ProtectSystem=full
+ProtectHome=no
+NoNewPrivileges=no
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=link-mon

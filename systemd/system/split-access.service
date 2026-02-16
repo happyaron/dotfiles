@@ -1,0 +1,13 @@
+[Unit]
+Description=Split-access symmetric routing (policy routing per IP)
+After=network-online.target tinc@vpn1.service tunnel-boot.service
+Wants=network-online.target tinc@vpn1.service tunnel-boot.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/root/scripts/split-access.sh apply
+ExecStop=/root/scripts/split-access.sh teardown
+
+[Install]
+WantedBy=multi-user.target
