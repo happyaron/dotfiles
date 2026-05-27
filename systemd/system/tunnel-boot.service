@@ -1,5 +1,6 @@
 [Unit]
-Description=IPv6 tunnels on eth1.100 (mytunnel ipip6)
+# Update description to match TUNNEL_V6_DEV and TUNNEL_NAME in network.conf
+Description=IPv6 tunnels (<TUNNEL_NAME> ipip6)
 After=network-online.target
 Wants=network-online.target
 

@@ -1,7 +1,8 @@
 [Unit]
 Description=WAN link health monitor and failover
-After=split-access.service wg-quick@tun0.service
-Wants=split-access.service wg-quick@tun0.service
+# Update wg-quick@ instance to match ROUTEDEV_0 in network.conf
+After=split-access.service wg-quick@<ROUTEDEV_0>.service
+Wants=split-access.service wg-quick@<ROUTEDEV_0>.service
 
 [Service]
 Type=oneshot

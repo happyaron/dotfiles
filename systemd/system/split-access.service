@@ -1,7 +1,8 @@
 [Unit]
 Description=Split-access symmetric routing (policy routing per IP)
-After=network-online.target tinc@vpn1.service tunnel-boot.service
-Wants=network-online.target tinc@vpn1.service tunnel-boot.service
+# Update tinc@ instance to match ROUTEDEV_1 in network.conf
+After=network-online.target tinc@<ROUTEDEV_1>.service tunnel-boot.service
+Wants=network-online.target tinc@<ROUTEDEV_1>.service tunnel-boot.service
 
 [Service]
 Type=oneshot
