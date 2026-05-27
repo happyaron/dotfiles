@@ -45,9 +45,9 @@ EOF
 run ip route add blackhole default table bgpif
 
 # ---------------------------------------------------------------------------
-# PBR for google.vpn1.edu.cn
+# PBR for US-bound traffic
 #
-# Prefer to route traffic to US (via vpn1 tunnel), avoiding congesting the
+# Prefer to route traffic to US (via VPN tunnel), avoiding congesting the
 # default uplink.  Metric 500 fallback goes via the secondary gateway.
 # ---------------------------------------------------------------------------
 
@@ -77,10 +77,10 @@ for _src in $PBR_T101_SOURCES; do
 done
 
 # ---------------------------------------------------------------------------
-# PBR for 100.68.0.0/24 → 1.1.1.0/24 via vpn1
+# PBR for T102 source/dest steering via VPN
 #
-# Only this source+destination pair is steered to vpn1.  No fallback gateway:
-# if vpn1 is down the traffic is blocked rather than leaking elsewhere.
+# Only this source+destination pair is steered to VPN.  No fallback gateway:
+# if VPN is down the traffic is blocked rather than leaking elsewhere.
 # Other traffic from 100.68.0.0/24 and other sources to 1.1.1.0/24 are
 # unaffected (handled by the main table).
 # Prerequisite: table "T102" must exist in /etc/iproute2/rt_tables.
