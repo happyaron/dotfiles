@@ -148,7 +148,6 @@ autoload -Uz vcs_info
 zstyle ':vcs_info:*' enable git
 zstyle ':vcs_info:*:*' formats           " %F{black}%K{white}%B %m %f%k%%b"
 zstyle ':vcs_info:*:*' actionformats     " %F{black}%K{white}%B %m(%a) %f%k%%b"
-zstyle ':vcs_info:*:*' check-for-changes true
 zstyle ':vcs_info:git*+set-message:*'    hooks git-prompt-status
 function +vi-git-prompt-status() {
     local s=${hook_com[branch]}
@@ -162,7 +161,7 @@ function +vi-git-prompt-status() {
     elif (( $behind )); then
         s+="%F{magenta}-"
     fi
-    [[ -n ${hook_com[staged]} || -n ${hook_com[unstaged]} ]] && s+="%F{blue}*"
+    [[ -n $(git status --porcelain 2>/dev/null) ]] && s+="%F{blue}*"
     hook_com[misc]=$s
 }
 
