@@ -2,9 +2,16 @@
 # set-pbr.sh — Policy-based routing for BGP neighbor isolation and US traffic steering.
 #
 # Called by set-routes.sh after main table routes are applied.
-# Prerequisites: tables "bgpif" and "T101" must exist in /etc/iproute2/rt_tables.
+# Prerequisites: tables "bgpif", "T101", "T102" must exist in /etc/iproute2/rt_tables.
 #
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+CONF_FILE="$(dirname "$0")/network.conf"
+if [ ! -f "$CONF_FILE" ]; then
+    echo "ERROR: $CONF_FILE not found. Copy network.conf.template and fill in values." >&2
+    exit 1
+fi
+. "$CONF_FILE"
 
 ERRORS=0
 
@@ -27,18 +34,15 @@ run() {
 ip route flush table bgpif 2>/dev/null || true
 ip rule  flush table bgpif 2>/dev/null || true
 
-run ip route add 192.0.2.48/30  dev eth0.2 table bgpif
-run ip route add 192.0.2.52/30  dev eth0.3 table bgpif
-run ip route add 192.0.2.56/30  dev eth0.4 table bgpif
-run ip route add 192.0.2.60/30 dev eth0.5 table bgpif
-run ip route add 192.0.2.64/30 dev eth0.6 table bgpif
-run ip route add blackhole default table bgpif
+while IFS='|' read -r _subnet _dev; do
+    [ -z "$_subnet" ] && continue
+    run ip route add "$_subnet" dev "$_dev" table bgpif
+    run ip rule add iif "$_dev" lookup bgpif
+done <<EOF
+$BGP_SUBNETS
+EOF
 
-run ip rule add iif eth0.2 lookup bgpif
-run ip rule add iif eth0.3 lookup bgpif
-run ip rule add iif eth0.4 lookup bgpif
-run ip rule add iif eth0.5 lookup bgpif
-run ip rule add iif eth0.6 lookup bgpif
+run ip route add blackhole default table bgpif
 
 # ---------------------------------------------------------------------------
 # PBR for google.vpn1.edu.cn
@@ -50,20 +54,48 @@ run ip rule add iif eth0.6 lookup bgpif
 ip route flush table T101 2>/dev/null || true
 ip rule  flush table T101 2>/dev/null || true
 
-run ip route add default via 192.0.2.3  dev vpn1 metric 100 table T101
-run ip route add default via 192.0.2.6  dev vpn1 metric 200 table T101
-run ip route add default via 192.0.2.37       metric 500 table T101
+while IFS='|' read -r _subnet _dev; do
+    [ -z "$_subnet" ] && continue
+    run ip route add "$_subnet" dev "$_dev" scope link table T101
+done <<EOF
+$PBR_T101_CONNECTED
+EOF
 
-run ip rule add from 192.0.2.35 lookup T101
-run ip rule add from 192.0.2.36 lookup T101
-run ip rule add from 192.0.2.34 lookup T101
+while IFS='|' read -r _gw _dev _metric; do
+    [ -z "$_gw" ] && continue
+    if [ -n "$_dev" ]; then
+        run ip route add default via "$_gw" dev "$_dev" metric "$_metric" table T101
+    else
+        run ip route add default via "$_gw" metric "$_metric" table T101
+    fi
+done <<EOF
+$PBR_T101_DEFAULTS
+EOF
 
-## PBR for office access to US (currently disabled)
-#run ip rule add from 100.64.2.0/24  lookup T101
-#run ip rule add from 100.64.64.0/24 lookup T101
+for _src in $PBR_T101_SOURCES; do
+    run ip rule add from "$_src" lookup T101
+done
 
-## Exception: force this PC through the main table
-run ip rule add from 100.64.2.11 lookup main
+# ---------------------------------------------------------------------------
+# PBR for 100.68.0.0/24 → 1.1.1.0/24 via vpn1
+#
+# Only this source+destination pair is steered to vpn1.  No fallback gateway:
+# if vpn1 is down the traffic is blocked rather than leaking elsewhere.
+# Other traffic from 100.68.0.0/24 and other sources to 1.1.1.0/24 are
+# unaffected (handled by the main table).
+# Prerequisite: table "T102" must exist in /etc/iproute2/rt_tables.
+# ---------------------------------------------------------------------------
+
+ip route flush table T102 2>/dev/null || true
+ip rule  flush table T102 2>/dev/null || true
+
+run ip route add "$PBR_T102_CONNECTED_SUBNET" dev "$PBR_T102_CONNECTED_DEV" scope link table T102
+run ip route add "$PBR_T102_DEST" via "$PBR_T102_ROUTE_GW" dev "$PBR_T102_ROUTE_DEV" table T102
+
+run ip rule add from "$PBR_T102_SOURCE" to "$PBR_T102_DEST" lookup T102
+
+## Exception: force this IP through the main table
+run ip rule add from "$PBR_EXCEPTION_IP" lookup main
 
 # ---------------------------------------------------------------------------
 # fwmark-based PBR

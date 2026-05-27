@@ -1,0 +1,107 @@
+# network.conf -- Site-specific network configuration
+# Sourced by network scripts. Copy this to network.conf and fill in real values.
+# network.conf is gitignored and will not be committed.
+
+# --- Primary WAN ---
+DEFAULTGW=<primary-wan-gateway>
+DEFAULTNET=<primary-wan-subnet/cidr>
+DEFAULTDEV=<primary-wan-interface>
+DEFAULTSRC=<primary-wan-public-ip>
+DEFAULT_LOCAL_IP=<primary-wan-local-ip>
+
+# --- Secondary WAN ---
+SECONDGW=<secondary-wan-gateway>
+SECONDNET=<secondary-wan-subnet/cidr>
+SECONDDEV=<secondary-wan-interface>
+SECONDSRC=<secondary-wan-source-ip>
+
+# --- VPN / tunnel routing ---
+ROUTEGW_0=<vpn-gateway-0>
+ROUTEDEV_0=<vpn-device-0>
+ROUTEPEER_0=<vpn-peer-0>
+
+ROUTEGW_1=<vpn-gateway-1>
+ROUTEDEV_1=<vpn-device-1>
+
+ROUTEGW_2=<vpn-gateway-2>
+ROUTEDEV_2=<vpn-device-2>
+
+VPN_SUBNET=<vpn-subnet/cidr>
+VPN_LOCAL_IP=<vpn-local-ip>
+VPN_LOCAL_GW=<vpn-local-gateway>
+
+# Aliases for link-mon.sh
+LINKGW_0=$ROUTEGW_0
+LINKDEV_0=$ROUTEDEV_0
+LINKGW_1=$ROUTEGW_1
+LINKDEV_1=$ROUTEDEV_1
+
+# --- IPv6 tunnel ---
+TUNNEL_NAME=<tunnel-name>
+TUNNEL_V6_DEV=<tunnel-v6-parent-interface>
+TUNNEL_V6_ADDR=<tunnel-v6-address/prefix>
+TUNNEL_V6_LOCAL=<tunnel-v6-local-endpoint>
+TUNNEL_V6_REMOTE=<tunnel-v6-remote-endpoint>
+TUNNEL_V4_ADDR=<tunnel-v4-address/prefix>
+
+# --- DNS forwarding (private forwarder only; public DNS stays in scripts) ---
+FWD_US_BIND9="<private-dns-forwarder>;"
+
+# --- BGP peer subnets (set-pbr.sh bgpif table) ---
+# Format: subnet|device  (one per line)
+BGP_SUBNETS="
+<bgp-subnet-1/cidr>|<bgp-device-1>
+<bgp-subnet-2/cidr>|<bgp-device-2>
+"
+
+# --- PBR T101 ---
+# Connected routes for T101 (subnet|device)
+PBR_T101_CONNECTED="
+<t101-connected-subnet-1/cidr>|<t101-connected-device-1>
+<t101-connected-subnet-2/cidr>|<t101-connected-device-2>
+"
+
+# Default routes for T101 (gateway|device|metric)
+PBR_T101_DEFAULTS="
+<t101-default-gw-1>|<t101-default-dev-1>|<metric>
+<t101-default-gw-2>|<t101-default-dev-2>|<metric>
+<t101-default-gw-3>||<metric>
+"
+
+# Source IPs that use T101 (space-separated)
+PBR_T101_SOURCES="<source-ip-1> <source-ip-2> <source-ip-3>"
+
+# --- PBR T102 ---
+PBR_T102_CONNECTED_SUBNET=<t102-connected-subnet/cidr>
+PBR_T102_CONNECTED_DEV=<t102-connected-device>
+PBR_T102_ROUTE_DST=<t102-route-destination/cidr>
+PBR_T102_ROUTE_GW=<t102-route-gateway>
+PBR_T102_ROUTE_DEV=<t102-route-device>
+PBR_T102_SOURCE=<t102-source-subnet/cidr>
+PBR_T102_DEST=<t102-dest-subnet/cidr>
+
+# Exception IP forced to main table
+PBR_EXCEPTION_IP=<exception-ip>
+
+# --- Split-access entries (split-access.sh) ---
+# Format: TABLE|IFACE|LOCAL_IP|GATEWAY|SUBNET|TYPE[|IPV6_NET|IPV6_GW]
+SPLIT_ACCESS_ENTRIES="
+<table>|<iface>|<local-ip>|<gateway>|<subnet/cidr>|primary
+<table>|<iface>|<local-ip>|<gateway>|<subnet/cidr>|primary
+<table>|<iface>|<local-ip>|<gateway>|<subnet/cidr>|primary|<ipv6-net>|<ipv6-gw>
+<table>|<iface>|<public-ip>|<gateway>|<subnet/cidr>|secondary
+"
+
+# --- Socat forwarding ---
+SOCAT_TARGET=<socat-target-ip>
+
+# --- IPsec ---
+IPSEC_REMOTE_V4=<ipsec-remote-ipv4>
+IPSEC_REMOTE_V6=<ipsec-remote-ipv6>
+
+# --- Internal subnets (set-default-vpn.sh legacy) ---
+INTERNAL_SUBNET=<internal-subnet/cidr>
+
+# --- Null route exclusion pattern (usr/rir/null_routes.sh) ---
+# Pipe-separated regex patterns for own IP prefixes to exclude from blocklists
+NULL_ROUTE_EXCLUDE_PATTERN="<own-prefix-1>|<own-prefix-2>"

@@ -31,11 +31,18 @@ DIR_SCRIPTS="$(cd "$(dirname "$0")" && pwd)"
 DOMAINS_LOCAL="${DIR_SCRIPTS}/domains.localadd"
 DOMAINS_LOCAL_US="${DIR_SCRIPTS}/domains.localadd_us"
 
+CONF_FILE="${DIR_SCRIPTS}/network.conf"
+if [ ! -f "$CONF_FILE" ]; then
+    echo "ERROR: $CONF_FILE not found. Copy network.conf.template and fill in values." >&2
+    exit 1
+fi
+. "$CONF_FILE"
+
 GFWLIST_URL="https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt"
 GOOGLE_CHINA_URL="https://raw.githubusercontent.com/felixonmars/dnsmasq-china-list/master/google.china.conf"
 
 FWD_GLOBAL_BIND9="1.1.1.1; 8.8.8.8; 8.8.4.4; 1.0.0.1;"
-FWD_US_BIND9="192.0.2.3;"
+# FWD_US_BIND9 loaded from network.conf
 FWD_CHINA_BIND9="119.29.29.29; 182.254.118.118; 223.5.5.5; 223.6.6.6; "
 
 FWD_DNSMASQ_1="8.8.4.4"
@@ -108,6 +115,11 @@ generate_bind9() {
         | sort | uniq > "$BIND9_OUT_GGCN"
 
     rm -f "$LIST_TMP" "$LIST_WORK"
+
+    if ! named-checkconf; then
+        echo "ERROR: named-checkconf failed, skipping reload" >&2
+        exit 1
+    fi
     rndc reload
 }
 

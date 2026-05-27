@@ -1,0 +1,10 @@
+[Unit]
+Description=Run dns-domains every 12 hours
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=12h
+AccuracySec=5min
+
+[Install]
+WantedBy=timers.target

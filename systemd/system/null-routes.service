@@ -1,0 +1,19 @@
+[Unit]
+Description=Update blackhole routes (table 249) from static, f2b and FireHOL
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/root/scripts/rir/null_routes.py
+WorkingDirectory=/root/scripts/rir
+
+ProtectSystem=full
+ReadWritePaths=/root/scripts/rir/db
+ProtectHome=no
+NoNewPrivileges=no
+CapabilityBoundingSet=CAP_NET_ADMIN
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=null_routes

@@ -1,0 +1,17 @@
+[Unit]
+Description=Update DNS forwarding lists (BIND9 gfwlist + google-china)
+After=network-online.target link-mon.service
+Wants=network-online.target link-mon.service
+
+[Service]
+Type=oneshot
+ExecStart=/root/scripts/dns-domains.sh --format=bind9
+
+ProtectSystem=full
+ReadWritePaths=/etc/bind /etc/dnsmasq.d
+ProtectHome=no
+NoNewPrivileges=no
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dns-domains

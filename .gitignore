@@ -1,1 +1,24 @@
 .DS_Store
+
+# Site-specific config with real IPs (use network.conf.template)
+usr/network-scripts/network.conf
+
+# Generated / downloaded data
+usr/network-scripts/global.txt
+usr/network-scripts/link.txt
+usr/network-scripts/pre-rewrite/
+usr/rir/db/
+*.old
+*.old2
+
+# Build artifacts
+__pycache__/
+*.pyc
+
+# IDE / editor
+.idea/
+.vscode/
+
+# Claude Code
+.claude/
+.mcp.json

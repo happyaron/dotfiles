@@ -89,6 +89,15 @@ else
             fi
             PROCEED=true
             ;;
+        autopkgtest )
+            if ! [ -s $DSCFILE ]; then
+                printf "E: $DSCFILE does not exist or empty.\n" 1>&2
+                exit 1
+            else
+                BASENAME=`basename $DSCFILE .dsc`
+            fi
+            AUTOPKGTEST=true
+            ;;
         update|clean|execute|debuild )
             PROCEED=true
             ;;
@@ -104,7 +113,7 @@ else
             PBUILDER_ACTION=execute
             ;;
         * )
-            printf "E: Operations in build|create|update|login|execute|edit|edit-script.\n" 1>&2
+            printf "E: Operations in build|create|update|login|execute|edit|edit-script|autopkgtest.\n" 1>&2
             exit 1
             ;;
     esac
@@ -144,7 +153,53 @@ COMMON_ARGS="--override-config \
     --bindmounts $BASEDIR/deps \
     --basetgz $BASEDIR/base/$DIST-$DEB_TARGET_ARCH-base.tgz"
 
-if [ "$PROCEED" = "true" ]; then
+if [ "$AUTOPKGTEST" = "true" ]; then
+    FUNC_PBUILDER_TMP
+    for i in autopkgtest autopkgtest-virt-chroot; do
+        if ! command -v "$i" > /dev/null 2>&1; then
+            printf 'E: Required command "%s" not found. Install autopkgtest.\n' "$i" 1>&2
+            exit 1
+        fi
+    done
+    AUTOPKGTEST_CHROOT=$PBUILDER_TMP/autopkgtest-$$
+    sudo mkdir -p "$AUTOPKGTEST_CHROOT"
+    sudo tar -xzf $BASEDIR/base/$DIST-$DEB_TARGET_ARCH-base.tgz -C "$AUTOPKGTEST_CHROOT"
+    AUTOPKGTEST_OUTDIR=$BASEDIR/logs/$DIST-$DEB_TARGET_ARCH/autopkgtest_${BASENAME}_${DATUM}
+    rm -rf "$AUTOPKGTEST_OUTDIR"
+    mkdir -p "$AUTOPKGTEST_OUTDIR"
+    CHROOT_MOUNTS=""
+    for mp in proc:proc:proc sysfs:sysfs:sys devtmpfs:udev:dev devpts:devpts:dev/pts; do
+        FSTYPE=${mp%%:*}
+        rest=${mp#*:}
+        SRCNAME=${rest%%:*}
+        RELPATH=${rest#*:}
+        MOUNTPOINT="$AUTOPKGTEST_CHROOT/$RELPATH"
+        sudo mkdir -p "$MOUNTPOINT"
+        if sudo mount -t "$FSTYPE" "$SRCNAME" "$MOUNTPOINT"; then
+            CHROOT_MOUNTS="$MOUNTPOINT $CHROOT_MOUNTS"
+        else
+            printf "W: Failed to mount %s on %s, continuing anyway.\n" "$FSTYPE" "$MOUNTPOINT" 1>&2
+        fi
+    done
+
+    cleanup_chroot() {
+        for mp in $CHROOT_MOUNTS; do
+            sudo umount -l "$mp" 2>/dev/null || true
+        done
+        sudo rm -rf "$AUTOPKGTEST_CHROOT"
+    }
+    trap cleanup_chroot EXIT
+
+    printf "I: Running autopkgtest on %s\n" "$DSCFILE"
+    sudo autopkgtest "$DSCFILE" \
+        -o "$AUTOPKGTEST_OUTDIR" \
+        --build-parallel=${NJOBS} \
+        -- chroot "$AUTOPKGTEST_CHROOT"
+    AUTOPKGTEST_RC=$?
+    cleanup_chroot
+    trap - EXIT
+    exit $AUTOPKGTEST_RC
+elif [ "$PROCEED" = "true" ]; then
     FUNC_PBUILDER_TMP
     $PBUILDER_CMD $COMMON_ARGS \
         --buildresult $BASEDIR/result/$DIST-$DEB_TARGET_ARCH \

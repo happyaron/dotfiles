@@ -19,11 +19,12 @@ import os
 import re
 import subprocess
 import sys
-import syslog
 import tempfile
 import time
 from ipaddress import ip_network, collapse_addresses
 from pathlib import Path
+
+os.environ["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 WORKDIR = Path("/root/scripts/rir")
 STATIC_CONF = WORKDIR / "conf.d/null/null.conf"
@@ -60,12 +61,10 @@ FIREHOL_EXCLUDE_RE = re.compile(
 )
 
 ROUTE_TABLE = 249
-SYSLOG_TAG = "null_routes"
 
 
 def log(msg: str) -> None:
     print(msg)
-    syslog.syslog(syslog.LOG_INFO, msg)
 
 
 def banner(msg: str = "") -> None:
@@ -284,7 +283,6 @@ def diff_routes(desired: list[str]) -> tuple[list[str], list[str]]:
 
 
 def main() -> int:
-    syslog.openlog(SYSLOG_TAG, syslog.LOG_PID)
     os.chdir(WORKDIR)
 
     banner("Starting to update dynamic blackhole configurations")
@@ -343,6 +341,11 @@ def main() -> int:
                 os.unlink(batch_path6)
 
     kernel_count = len(get_kernel_blackholes())
+
+    # Give BIRD time to import the kernel table changes before querying
+    if total_commands > 0:
+        time.sleep(2)
+
     try:
         bird_result = subprocess.run(
             ["birdc", "show", "route", "count", "table", "table_nullroute"],
@@ -356,7 +359,6 @@ def main() -> int:
     log(f"Summary - kernel rt_table: {kernel_count}, redistributed: {bird_count}")
     banner()
 
-    syslog.closelog()
     return 0
 
 

@@ -1,12 +1,19 @@
 #!/bin/sh
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-V6ETH='eth1.100'
-V6ADDR='2001:db8::116/64'
-V6LOCAL='2001:db8::116'
-V6REMOTE='2001:db8::136'
-TUNNEL='mytunnel'
-TUNNEL_ADDR='192.0.2.65/30'
+CONF_FILE="$(dirname "$0")/network.conf"
+if [ ! -f "$CONF_FILE" ]; then
+    echo "ERROR: $CONF_FILE not found. Copy network.conf.template and fill in values." >&2
+    exit 1
+fi
+. "$CONF_FILE"
+
+V6ETH="$TUNNEL_V6_DEV"
+V6ADDR="$TUNNEL_V6_ADDR"
+V6LOCAL="$TUNNEL_V6_LOCAL"
+V6REMOTE="$TUNNEL_V6_REMOTE"
+TUNNEL="$TUNNEL_NAME"
+TUNNEL_ADDR="$TUNNEL_V4_ADDR"
 
 apply() {
     if ! ip -6 addr show dev "$V6ETH" | grep -q "$V6ADDR"; then

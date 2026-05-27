@@ -22,12 +22,19 @@ export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 #   split-access.sh teardown — remove all rules added by this script
 #
 
+CONF_FILE="$(dirname "$0")/network.conf"
+if [ ! -f "$CONF_FILE" ]; then
+    echo "ERROR: $CONF_FILE not found. Copy network.conf.template and fill in values." >&2
+    exit 1
+fi
+. "$CONF_FILE"
+
 ERRFILE=$(mktemp /tmp/split-access.XXXXXX)
 cleanup() { rm -f "$ERRFILE"; }
 trap cleanup EXIT
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Configuration -- loaded from network.conf (SPLIT_ACCESS_ENTRIES)
 #
 # Each entry is a single line with fields separated by '|':
 #
@@ -42,15 +49,7 @@ trap cleanup EXIT
 # The GATEWAY field is the next-hop for that interface's L2 segment.
 # ---------------------------------------------------------------------------
 
-ENTRIES="
-T1|eth0|192.0.2.18|192.0.2.17|192.0.2.16/24|primary
-T2|eth1.100|192.0.2.37|192.0.2.33|192.0.2.32/25|primary
-T3|vpn1|192.0.2.4|192.0.2.5|192.0.2.0/24|primary|2001:db8:11::/48|fe80::1
-T4|eth0|198.51.100.1|192.0.2.17|192.0.2.16/24|secondary
-T5|eth0|198.51.100.3|192.0.2.17|192.0.2.16/24|secondary
-T6|eth0|198.51.100.2|192.0.2.17|192.0.2.16/24|secondary
-T7|eth0|198.51.100.4|192.0.2.17|192.0.2.16/24|secondary
-"
+ENTRIES="$SPLIT_ACCESS_ENTRIES"
 
 # ---------------------------------------------------------------------------
 # Helpers
