@@ -1,8 +1,9 @@
 " Description: vim runtime configure file
 " vim: ft=vim foldmethod=marker
 
-set nocompatible	    " not vi compatible
-let mapleader="\<Space>"    " this is used a lot in plugin settings
+set nocompatible
+let mapleader="\<Space>"
+set timeoutlen=1000 ttimeoutlen=0
 
 if filereadable( $HOME . '/.vimrc.plug'  )
     source  $HOME/.vimrc.plug
@@ -11,27 +12,32 @@ endif
 filetype plugin indent on
 syntax on
 
+" {{{ general settings
 set mouse=""            " disable mouse
 set history=50		" keep 50 lines of command line history
 " keep record of editing information for cursor restore and more
-set viminfo='10,\"100,:20,%,n~/.viminfo
+set viminfo='10,"100,:20,%,n~/.viminfo
+
+set background=dark
+set notitle             " do not set xterm dynamic title
+
+" never use background color erase
+let &t_ut=''
+
+" disable bell
+set noeb vb t_vb=
 
 " do incremental searching
 set incsearch hlsearch wrapscan
 set ignorecase smartcase
 
 set showmatch		" show the matching brackets when typing
-" set ambiwidth=double     " set this if terminal has similar setting
 
 set showcmd		" display incomplete commands
 set ruler		" show the cursor position all the time in statusline
 set laststatus=2        " always display a nicer status bar
 set statusline=%<%h%m%r\ %f%=[%{&filetype},%{&fileencoding},%{&fileformat}]%k\ %-14.(%l/%L,%c%V%)\ %P
-" set wildmenu		" show possible command when pressing <TAB>
 set wildmode=longest:list,full
-"set cmdheight=2
-set notitle             " do not set xterm dynamic title
-"set number
 
 set matchtime=5
 set lazyredraw          " faster for macros
@@ -41,58 +47,47 @@ set ttyfast             " better for xterm
 set spellsuggest=best
 set spelllang=en_gb,cjk
 
-set guioptions-=T
-set guioptions-=r
-let s:uname = system("uname")
-if s:uname == "Darwin\n"
-    "Mac options here
-    set guifont=Monaco\ for\ Powerline:h14
-    set lines=50
-    set columns=90
-else
-    set guifont=Monaco\ 10
-    set guifontwide=WenQuanYi\ Micro\ Hei\ 12
-endif
+set guifont=Monaco\ 10
+set guifontwide=WenQuanYi\ Micro\ Hei\ 12
 
-set smartindent autoindent expandtab smarttab
+set autoindent smartindent expandtab smarttab
 set shiftwidth=4
 set softtabstop=4 	" replace <tab> with 4 blank space.
 set textwidth=80	" wrap text for 78 letters
 
+set hidden              " hide instead of abandon buffer
+set autoread            " reload files changed externally
 map Q gq
 set wrap
 set whichwrap=b,s,<,>,[,],h,l
 set linebreak           " no breakline in the middle of a word
 
-if executable( 'par' )
-    set formatprg=par\ req
-else
-    set formatprg=fmt
-endif
+set formatprg=fmt
 set formatoptions+=mM     " default tcq, mM to help wrap chinese
 
 set backup
+set backupcopy=yes      " safe for docker bind-mounts and hard links
 if !isdirectory($HOME . "/.backup")
     call mkdir($HOME . "/.backup", "p")
 endif
 set backupdir=$HOME/.backup
 set directory=$HOME/.backup     "swp
 
-if version >= 703
-    if !isdirectory($HOME . "/.vim/undo")
-        call mkdir($HOME . "/.vim/undo", "p")
-    endif
-    set undodir=~/.vim/undo undofile undolevels=1000 undoreload=1000
+if !isdirectory($HOME . "/.vim/undo")
+    call mkdir($HOME . "/.vim/undo", "p")
 endif
+set undodir=~/.vim/undo undofile undolevels=1000 undoreload=1000
 
 set commentstring=#%s       " default comment style
 set sps=best,10             " only show 10 best spell suggestions
 set dictionary+=/usr/share/dict/words
 
+" make fuzzy find with :find possible
+set path+=**
+
 set magic
 
 " 输入:set list命令是应该显示些啥？
-"set listchars=tab:>-,eol:<
 set listchars=nbsp:¬,eol:¶,tab:>-,extends:»,precedes:«,trail:•
 
 " 光标移动到buffer的顶部和底部时保持3行距离
@@ -101,12 +96,6 @@ set scrolloff=3
 set foldenable foldnestmax=1 foldlevelstart=1
 set foldmethod=marker   " fdm=syntax is very slow and makes trouble for neocomplete
 
-set background=dark
-set cc=90
-
-"maybe necessary for urxvt, because vim use ^H for backspace,
-"but urxvt can use both ^H and ^?
-"fixdel
 set backspace=2
 
 "tags, use semicolon to seperate so that vim searches parent directories!
@@ -114,29 +103,55 @@ set tags=./.tags;
 
 " 高亮当前行
 set cursorline
-"set cursorcolumn
-" autocmd InsertLeave * set nocursorline
-" autocmd InsertEnter * set cursorline
 
-" remove all trailing white spaces
-"autocmd BufWritePre * :%s/\s\+$//e
-
-"---------------------encoding detection--------------------------------
+"encoding detection
 set encoding=utf-8
 set fileencoding&
 set fileencodings=ucs-bom,utf-8,enc-cn,cp936,gbk,latin1
 
-"---------------------completion settings-------------------------------
-"make completion menu usable even when some characters are typed.
+"completion settings
 set completeopt=longest,menuone
 set complete-=i
 set complete-=t
+" }}}
 
-"---------------------keyboard mappings---------------------------------
+" {{{ true color and terminal settings
+if $TERM =~ '^\(xterm\|screen\|tmux\)' || $TERM =~ '256color$'
+    let &t_8f= "\e[38;2;%lu;%lu;%lum"
+    let &t_8b= "\e[48;2;%lu;%lu;%lum"
+    set t_Co=256 termguicolors
+endif
+
+" curly underline support
+let &t_Cs = "\e[4:3m"
+let &t_Ce = "\e[4:0m"
+" }}}
+
+" {{{ bracketed paste
+if !exists("g:loaded_bracketed_paste")
+    let g:loaded_bracketed_paste = 1
+
+    let &t_ti .= "\<Esc>[?2004h"
+    let &t_te = "\e[?2004l" . &t_te
+
+    function! XTermPasteBegin(ret)
+        set pastetoggle=<f29>
+        set paste
+        return a:ret
+    endfunction
+
+    execute "set <f28>=\<Esc>[200~"
+    execute "set <f29>=\<Esc>[201~"
+    map <expr> <f28> XTermPasteBegin("i")
+    imap <expr> <f28> XTermPasteBegin("")
+    vmap <expr> <f28> XTermPasteBegin("c")
+    cmap <f28> <nop>
+    cmap <f29> <nop>
+endif
+" }}}
+
+" {{{ keyboard mappings
 set winaltkeys=no
-
-"ascii art escape sequence for /etc/motd, ssh banner and etc
-imap ,e   <C-V><C-[>[
 
 "insert time stamp
 imap <F8> <C-R>=strftime("%Y-%m-%d %H:%M")<CR>
@@ -156,6 +171,12 @@ inoremap <m-k> <C-o>gk
 " search for visual-mode selected text
 vmap / y/<C-R>"<CR>
 
+" backspace to jump to previous buffer
+nnoremap <BS> <C-^>
+
+" use <Tab> to jump to next hit without leaving search mode
+cnoremap <expr> <Tab> getcmdtype() =~ '[\/?]' ? "<C-g>" : "<C-z>"
+
 " tab navigation
 nmap tp :tabprevious<cr>
 nmap tn :tabnext<cr>
@@ -173,25 +194,11 @@ nmap <Leader>p "+p
 nmap <Leader>P "+P
 vmap <Leader>p "+p
 vmap <Leader>P "+P
+" }}}
 
-"--------------------------file type settings---------------------------
+" {{{ file type settings
 "Python
 autocmd FileType python set omnifunc=pythoncomplete#Complete
-
-"ruby
-
-"no folding for comment block and if/do blocks
-let ruby_no_comment_fold=1
-let ruby_fold=1
-let ruby_operators=1
-autocmd FileType ruby set omnifunc=rubycomplete#Complete
-autocmd FileType ruby set shiftwidth=2 softtabstop=2
-autocmd FileType ruby let g:rubycomplete_buffer_loading = 1
-autocmd FileType ruby let g:rubycomplete_classes_in_global = 1
-autocmd BufRead,BufNewfile Vagrantfile set ft=ruby
-
-" scss
-autocmd FileType scss,sass setl shiftwidth=2 softtabstop=2
 
 "C/C++
 autocmd FileType cpp setl nofoldenable
@@ -199,24 +206,16 @@ autocmd FileType cpp setl nofoldenable
 autocmd FileType c setl cindent
 
 "Txt, set syntax file and spell check
-"autocmd BufRead,BufNewFile *.txt set filetype=txt
-
-"let g:tex_flavor="context"
 autocmd FileType tex,plaintex,context
             \|silent set spell
             \|nmap <buffer> <F8> gwap
 
-"emails,
-"delete old quotations, set spell and put cursor in the first line
+"emails
 autocmd FileType mail
-            \|:silent setlocal fo+=aw       " http://wcm1.web.rice.edu/mutt-tips.html
+            \|:silent setlocal fo+=aw
             \|:silent set spell
-            "\|:silent 0put=''
             \|:silent g/^.*>\sOn.*wrote:\s*$\|^>\s*>.*$/de
             \|:silent 1
-
-"cuda
-au BufNewFile,BufRead *.cu set ft=cuda |setlocal cindent
 
 "markdown
 autocmd BufNewFile,BufRead *mkd,*.md,*.mdown set ft=markdown
@@ -225,26 +224,10 @@ autocmd FileType markdown set comments=n:> nu nospell textwidth=0 formatoptions=
 "yaml
 autocmd FileType yaml set softtabstop=2 shiftwidth=2 noautoindent nosmartindent
 
-"coffee
-autocmd FileType coffee set softtabstop=2 shiftwidth=2
-
-"viki
-autocmd BufNewFile,BufRead *.viki set ft=viki
-
-"fcron
-autocmd BufNewFile,BufRead /tmp/fcr-* set ft=crontab
-
-"pentadactyl/vimperator
-autocmd BufNewFile,BufRead /tmp/pentadactyl*.tmp set textwidth=9999
-autocmd BufNewFile,BufRead *.vimperatorrc set ft=vimperator
-
-"remind
-autocmd BufNewFile,BufRead *.rem set ft=remind
-
 "crontab hack for mac
 autocmd BufEnter /private/tmp/crontab.* setl backupcopy=yes
+" }}}
 
-"-------------------special settings------------------------------------
 " {{{ big files?
 let g:LargeFile = 0.3	"in megabyte
 augroup LargeFile
@@ -286,21 +269,7 @@ augroup vimrc
 augroup END
 " }}}
 
-" {{{ dynamic cursor color for xterm \033=>\e  007=>\a (BEL)
-if &term =~ "xterm"
-    :silent !echo -ne "\e]12;IndianRed2\007"
-    let &t_SI = "\e]12;RoyalBlue1\007"
-    let &t_EI = "\e]12;IndianRed2\007"
-    autocmd VimLeave * :!echo -ne "\e]12;green\007"
-"elseif &term =~ "screen"    " screen in urxvt or xterm
-    ":silent !echo -ne "\eP\e]12;IndianRed2\007\e\\"
-    "let &t_SI = "\eP\e]12;RoyalBlue1\007\e\\"
-    "let &t_EI = "\eP\e]12;IndianRed2\007\e\\"
-    "autocmd VimLeave * :!echo -ne "\eP\e]12;green\007\e\\"
-endif
-" }}}
-
-" visual p does not replace paste buffer {{{ "
+" {{{ visual p does not replace paste buffer
 function! RestoreRegister()
   let @" = s:restore_reg
   return ''
@@ -310,10 +279,25 @@ function! s:Repl()
   return "p@=RestoreRegister()\<cr>"
 endfunction
 vmap <silent> <expr> p <sid>Repl()
-" }}} visual p does not replace paste buffer "
+" }}}
 
-" Highlight keywords like TODO BUG HACK INFO and etc {{{ "
+" Highlight keywords like TODO BUG HACK INFO and etc {{{
 autocmd Syntax * call matchadd('Todo',  '\W\zs\(TODO\|FIXME\|CHANGED\|XXX\|BUG\|HACK\)')
 autocmd Syntax * call matchadd('Debug', '\W\zs\(NOTE\|INFO\|IDEA\)')
-" }}} Highlight keywords like TODO BUG HACK INFO and etc "
+" }}}
 
+" {{{ quickfix auto-height
+au FileType qf call AdjustWindowHeight(3, 10)
+function! AdjustWindowHeight(minheight, maxheight)
+    let l = 1
+    let n_lines = 0
+    let w_width = winwidth(0)
+    while l <= line('$')
+        let l_len = strlen(getline(l)) + 0.0
+        let line_width = l_len/w_width
+        let n_lines += float2nr(ceil(line_width))
+        let l += 1
+    endw
+    exe max([min([n_lines, a:maxheight]), a:minheight]) . "wincmd _"
+endfunction
+" }}}
