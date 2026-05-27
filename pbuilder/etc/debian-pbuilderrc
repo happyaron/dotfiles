@@ -1,5 +1,5 @@
 ## Mirror configuration
-MIRRORSITE=http://http.debian.net/debian
+MIRRORSITE=http://deb.debian.org/debian
 # OTHERMIRROR="deb http://http.debian.net/debian wheezy-backports main"
 ## Enabled components
 # COMPONENTS="main universe"
@@ -16,8 +16,10 @@ APTCACHEHARDLINK=no
 # USEDEVFS=yes
 ## Seperate APT cache, not enabled by default
 # APTCACHE="$HOME/pbuilder/aptcache/$DIST-$ARCH/"
-## For using ccache, not enabled by default
-# export CCACHE_DIR="/var/cache/pbuilder/ccache"
-# export PATH="/usr/lib/ccache:${PATH}"
-# EXTRAPACKAGES+=ccache
-# BINDMOUNTS="${CCACHE_DIR}"
+## ccache — persist compiler cache across builds
+export CCACHE_DIR="/var/cache/pbuilder/ccache"
+export PATH="/usr/lib/ccache:${PATH}"
+EXTRAPACKAGES="ccache eatmydata"
+BINDMOUNTS="${CCACHE_DIR}"
+## eatmydata — skip fsyncs to speed up package installs
+EATMYDATA=yes
