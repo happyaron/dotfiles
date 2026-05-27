@@ -74,7 +74,6 @@ PBR_T101_SOURCES="<source-ip-1> <source-ip-2> <source-ip-3>"
 # --- PBR T102 ---
 PBR_T102_CONNECTED_SUBNET=<t102-connected-subnet/cidr>
 PBR_T102_CONNECTED_DEV=<t102-connected-device>
-PBR_T102_ROUTE_DST=<t102-route-destination/cidr>
 PBR_T102_ROUTE_GW=<t102-route-gateway>
 PBR_T102_ROUTE_DEV=<t102-route-device>
 PBR_T102_SOURCE=<t102-source-subnet/cidr>
