@@ -9,6 +9,7 @@ DIST=$1
 DEB_TARGET_ARCH=$2
 OPERATION=$3
 DSCFILE=$4
+DEPSDIR=$5
 
 for i in dpkg-architecture pbuilder pigz debootstrap; do
     if ! PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin command -v "$i" > /dev/null 2>&1; then
@@ -55,9 +56,17 @@ if ! [ -d $BASEDIR/base ]; then
     mkdir -p $BASEDIR/base
 fi
 
-if ! [ -d $BASEDIR/deps ]; then
-    printf "W: $BASEDIR/deps does not exist, creating.\n" 1>&2
-    mkdir -p $BASEDIR/deps
+if [ -n "$DEPSDIR" ]; then
+    if ! [ -d "$DEPSDIR" ]; then
+        printf 'E: Deps directory "%s" does not exist.\n' "$DEPSDIR" 1>&2
+        exit 1
+    fi
+    DEPSDIR=$(cd "$DEPSDIR" && pwd)
+    if ! command -v apt-ftparchive > /dev/null 2>&1; then
+        printf 'E: apt-ftparchive not found. Install apt-utils.\n' 1>&2
+        exit 1
+    fi
+    (cd "$DEPSDIR" && apt-ftparchive packages . > Packages)
 fi
 
 if ! [ -d $BASEDIR/hooks ]; then
@@ -126,8 +135,8 @@ else
     LOG=$BASEDIR/logs/$DIST-$DEB_TARGET_ARCH/${OPERATION}_${DATUM}.log
 fi
 
-# Consume the 4 positional parameters already assigned above.
-shift 4 2>/dev/null || shift $#
+# Consume the positional parameters already assigned above.
+shift 5 2>/dev/null || shift $#
 # If extra arguments are passed via --, strip the separator.
 if [ "${1:-}" = "--" ]; then
     shift
@@ -150,8 +159,21 @@ COMMON_ARGS="--override-config \
     --distribution $DISTRO \
     --configfile $BASEDIR/etc/$DIST-$DEB_TARGET_ARCH \
     --hookdir $BASEDIR/hooks \
-    --bindmounts $BASEDIR/deps \
     --basetgz $BASEDIR/base/$DIST-$DEB_TARGET_ARCH-base.tgz"
+
+if [ -n "$DEPSDIR" ]; then
+    COMMON_ARGS="$COMMON_ARGS --bindmounts $DEPSDIR"
+fi
+
+run_pbuilder() {
+    if [ -n "$DEPSDIR" ]; then
+        $PBUILDER_CMD $COMMON_ARGS \
+            --othermirror "deb [trusted=yes] file://$DEPSDIR ./" \
+            "$@"
+    else
+        $PBUILDER_CMD $COMMON_ARGS "$@"
+    fi
+}
 
 if [ "$AUTOPKGTEST" = "true" ]; then
     FUNC_PBUILDER_TMP
@@ -201,20 +223,20 @@ if [ "$AUTOPKGTEST" = "true" ]; then
     exit $AUTOPKGTEST_RC
 elif [ "$PROCEED" = "true" ]; then
     FUNC_PBUILDER_TMP
-    $PBUILDER_CMD $COMMON_ARGS \
+    run_pbuilder \
         --buildresult $BASEDIR/result/$DIST-$DEB_TARGET_ARCH \
         --logfile $LOG \
         "$@" $DSCFILE
+    [ -n "$DEPSDIR" ] && rm -f "$DEPSDIR/Packages"
 elif [ "$LOGIN" = "true" ]; then
     FUNC_PBUILDER_TMP
-    $PBUILDER_CMD $COMMON_ARGS
+    run_pbuilder
 elif [ "$EDIT" = "true" ]; then
     FUNC_PBUILDER_TMP
-    $PBUILDER_CMD $COMMON_ARGS \
-        --save-after-login
+    run_pbuilder --save-after-login
 elif [ "$EXEC" = "true" ]; then
     FUNC_PBUILDER_TMP
-    $PBUILDER_CMD $COMMON_ARGS \
+    run_pbuilder \
         --logfile $LOG \
         --save-after-exec
 fi
