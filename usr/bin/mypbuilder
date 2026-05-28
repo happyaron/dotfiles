@@ -136,7 +136,12 @@ else
 fi
 
 # Consume the positional parameters already assigned above.
-shift 5 2>/dev/null || shift $#
+# dash treats `shift n` with n>$# as a fatal error, so check first.
+if [ $# -ge 5 ]; then
+    shift 5
+else
+    shift $#
+fi
 # If extra arguments are passed via --, strip the separator.
 if [ "${1:-}" = "--" ]; then
     shift
