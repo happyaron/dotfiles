@@ -1,8 +1,8 @@
 ## Mirror configuration
 MIRRORSITE=http://deb.debian.org/debian
-# OTHERMIRROR="deb http://http.debian.net/debian wheezy-backports main"
-## Enabled components
-# COMPONENTS="main universe"
+# OTHERMIRROR="deb http://deb.debian.org/debian stable-backports main"
+## Enabled components (add "contrib non-free non-free-firmware" if needed)
+# COMPONENTS="main contrib non-free non-free-firmware"
 ## Options to debootstrap
 DEBOOTSTRAPOPTS=(
     '--variant=buildd'
@@ -23,3 +23,5 @@ EXTRAPACKAGES="ccache eatmydata"
 BINDMOUNTS="${CCACHE_DIR}"
 ## eatmydata — skip fsyncs to speed up package installs
 EATMYDATA=yes
+## Parallel build (set here so sudoers does not need SETENV)
+export DEB_BUILD_OPTIONS="parallel=$(nproc)"

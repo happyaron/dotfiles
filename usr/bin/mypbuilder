@@ -155,7 +155,9 @@ FUNC_PBUILDER_TMP() {
 }
 
 NJOBS=`nproc`
-PBUILDER_CMD="sudo DEB_BUILD_PARALLEL=1 DEB_BUILD_OPTIONS=parallel=${NJOBS} $ARG pbuilder $PBUILDER_ACTION"
+# DEB_BUILD_OPTIONS belongs in ~/pbuilder/etc/<dist>-<arch> as `export DEB_BUILD_OPTIONS=...`
+# so it survives sudo without needing SETENV in sudoers.
+PBUILDER_CMD="sudo $ARG pbuilder $PBUILDER_ACTION"
 COMMON_ARGS="--override-config \
     --autocleanaptcache \
     --compressprog pigz \
