@@ -462,8 +462,20 @@ alias forget='unset HISTFILE'
 
 #}}}
 
-if [ -f /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ]; then
-    source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+_zsh_hl_found=
+for _zsh_hl in \
+    /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh \
+    /usr/share/zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh \
+    /opt/homebrew/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh \
+    /usr/local/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+do
+    if [ -f $_zsh_hl ]; then
+        source $_zsh_hl
+        _zsh_hl_found=1
+        break
+    fi
+done
+if [ -n "$_zsh_hl_found" ]; then
     ZSH_HIGHLIGHT_STYLES[reserved-word]='fg=magenta,bold'
     ZSH_HIGHLIGHT_STYLES[alias]='fg=cyan,bold'
     ZSH_HIGHLIGHT_STYLES[builtin]='fg=yellow,bold'
@@ -471,6 +483,9 @@ if [ -f /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ]; then
     ZSH_HIGHLIGHT_STYLES[command]='fg=blue,bold'
     ZSH_HIGHLIGHT_STYLES[precommand]='fg=red,bold'
     ZSH_HIGHLIGHT_STYLES[unknown-token]='none,bold'
+else
+    print -P "%F{yellow}zsh-syntax-highlighting not found%f -- install it (e.g. apt/pacman/brew install zsh-syntax-highlighting) for command coloring."
 fi
+unset _zsh_hl _zsh_hl_found
 
 typeset -U PATH
