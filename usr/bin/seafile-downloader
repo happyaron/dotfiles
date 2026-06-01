@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""Download all files from a Seafile shared-directory link.
+
+Usage:
+    python3 download_seafile.py <share-link-url> [output-dir]
+"""
+
+import os
+import sys
+import time
+from urllib.parse import urlsplit, parse_qs, unquote, quote
+
+import requests
+
+session = requests.Session()
+session.headers.update({"User-Agent": "Mozilla/5.0 (seafile-dl)"})
+
+
+def parse_link(url):
+    """Return (server_root, token, start_path) from a share link.
+
+    Handles trailing query params: ?p=/sub/folder selects a starting
+    subdirectory; other params (mode, dl, ...) are ignored.
+    """
+    parts = urlsplit(url)
+    server = f"{parts.scheme}://{parts.netloc}"
+    segments = [s for s in parts.path.split("/") if s]
+    if len(segments) < 2 or segments[0] not in ("d", "u"):
+        sys.exit(f"Unrecognized Seafile share link: {url}")
+    token = segments[1]
+
+    p = parse_qs(parts.query).get("p", ["/"])[0]
+    start_path = "/" + unquote(p).strip("/")
+    if start_path != "/":
+        start_path += "/"
+    return server, token, start_path
+
+
+def list_dir(server, token, path):
+    """List directory entries under `path` (e.g. '/') via the share-link API."""
+    api = f"{server}/api/v2.1/share-links/{token}/dirents/"
+    resp = session.get(api, params={"path": path}, timeout=30)
+    resp.raise_for_status()
+    return resp.json().get("dirent_list", [])
+
+
+def download_file(server, token, remote_path, dest_path):
+    """Download a single file via the ?dl=1 endpoint, resuming a partial .part."""
+    dl_url = f"{server}/d/{token}/files/?p={quote(remote_path)}&dl=1"
+    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+    tmp = dest_path + ".part"
+    have = os.path.getsize(tmp) if os.path.exists(tmp) else 0
+
+    headers = {"Range": f"bytes={have}-"} if have else {}
+    with session.get(dl_url, stream=True, timeout=300, headers=headers) as resp:
+        resp.raise_for_status()
+        # 206 => server honored the range, append; anything else => start over.
+        if have and resp.status_code == 206:
+            mode = "ab"
+        else:
+            if have:
+                print(f"  range not honored, restarting {tmp}")
+            have = 0
+            mode = "wb"
+        with open(tmp, mode) as fh:
+            for chunk in resp.iter_content(chunk_size=1 << 16):
+                if chunk:
+                    fh.write(chunk)
+    os.replace(tmp, dest_path)
+    size = os.path.getsize(dest_path)
+    resumed = f", resumed from {have:,}" if have else ""
+    print(f"  saved {dest_path} ({size:,} bytes{resumed})")
+
+
+def walk(server, token, remote_path, local_root):
+    """Recursively download everything under remote_path."""
+    for entry in list_dir(server, token, remote_path):
+        is_dir = entry.get("is_dir", False)
+        child_remote = entry["folder_path"] if is_dir else entry["file_path"]
+        child_local = os.path.join(local_root, *child_remote.strip("/").split("/"))
+        if is_dir:
+            print(f"[dir]  {child_remote}")
+            walk(server, token, child_remote.rstrip("/") + "/", local_root)
+        else:
+            if os.path.exists(child_local):
+                print(f"  skip {child_local} (exists)")
+                continue
+            print(f"[file] {child_remote}")
+            for attempt in range(3):
+                try:
+                    download_file(server, token, child_remote, child_local)
+                    break
+                except requests.RequestException as exc:
+                    print(f"  retry {attempt + 1}/3 after error: {exc}")
+                    time.sleep(2 * (attempt + 1))
+            else:
+                print(f"  FAILED: {child_remote}")
+
+
+def main():
+    if len(sys.argv) < 2:
+        sys.exit(__doc__)
+    url = sys.argv[1]
+    out_dir = sys.argv[2] if len(sys.argv) > 2 else "."
+    server, token, start_path = parse_link(url)
+    print(
+        f"Server: {server}\nToken:  {token}\n"
+        f"Start:  {start_path}\nOutput: {os.path.abspath(out_dir)}\n"
+    )
+    walk(server, token, start_path, out_dir)
+    print("\nDone.")
+
+
+if __name__ == "__main__":
+    main()
