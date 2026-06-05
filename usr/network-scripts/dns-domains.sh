@@ -63,7 +63,8 @@ LIST_TMP="${TMP_DIR}/dns-domains.$$.tmp"
 LIST_WORK="${TMP_DIR}/dns-domains.$$.work"
 
 cleanup() {
-    rm -f "$LIST_TMP" "$LIST_WORK" "${LIST_WORK}.out"
+    rm -f "$LIST_TMP" "$LIST_WORK" "${LIST_WORK}.out" \
+          "${BIND9_OUT_GFW}.new" "${BIND9_OUT_GGCN}.new" "${DNSMASQ_OUT}.new"
 }
 trap cleanup EXIT
 
@@ -88,16 +89,20 @@ fetch_google_china() {
         | sed '/^$/d;/^#/d'
 }
 
-# Abort if gfwlist came back empty; warn if it is suspiciously short.
+# Returns 0 if the gfwlist in $1 is usable, non-zero (with a warning) if it is
+# empty or suspiciously short — the caller then keeps the last-good output
+# instead of overwriting it with a degraded list.
 check_gfwlist() {
     count=$(wc -l < "$1")
     if [ "$count" -eq 0 ]; then
-        echo "ERROR: gfwlist fetch returned empty result, aborting" >&2
-        exit 1
+        echo "WARNING: gfwlist fetch returned empty result; keeping existing config" >&2
+        return 1
     fi
     if [ "$count" -lt "$GFWLIST_MIN" ]; then
-        echo "WARNING: gfwlist returned only $count domains (expected >= $GFWLIST_MIN); the fetch may be partial or poisoned and the generated config is likely incomplete" >&2
+        echo "WARNING: gfwlist returned only $count domains (expected >= $GFWLIST_MIN); the fetch is likely partial or poisoned, keeping existing config" >&2
+        return 1
     fi
+    return 0
 }
 
 # --- BIND9 output ---------------------------------------------------------
@@ -109,28 +114,37 @@ BIND9_EXCLUSIONS='/openai.com/d;/chatgpt.com/d;/oaistatic.com/d;/oaiusercontent.
 generate_bind9() {
     rm -f "$LIST_TMP" "$LIST_WORK"
 
-    grep -v '#' "$DOMAINS_LOCAL" | while read -r line; do
-        [ -z "$line" ] && continue
-        printf 'zone "%s" { type forward; forward only; forwarders {%s};};\n' "$line" "$FWD_GLOBAL_BIND9"
-    done > "$LIST_WORK"
-
-    grep -v '#' "$DOMAINS_LOCAL_US" | while read -r line; do
-        [ -z "$line" ] && continue
-        printf 'zone "%s" { type forward; forward only; forwarders {%s};};\n' "$line" "$FWD_US_BIND9"
-    done >> "$LIST_WORK"
-
-    # github domains excluded from gfwlist (handled via domains.localadd_us)
+    # gfwlist + localadd → BIND9_OUT_GFW, promoted only if gfwlist is healthy.
     fetch_gfwlist > "$LIST_TMP"
-    check_gfwlist "$LIST_TMP"
-    grep -v github "$LIST_TMP" \
-        | sed "s/^/zone \"/;s/$/\" { type forward; forward only; forwarders {${FWD_GLOBAL_BIND9}};};/" \
-        >> "$LIST_WORK"
+    if check_gfwlist "$LIST_TMP"; then
+        grep -v '#' "$DOMAINS_LOCAL" | while read -r line; do
+            [ -z "$line" ] && continue
+            printf 'zone "%s" { type forward; forward only; forwarders {%s};};\n' "$line" "$FWD_GLOBAL_BIND9"
+        done > "$LIST_WORK"
 
-    sort "$LIST_WORK" | uniq | sed "$BIND9_EXCLUSIONS" > "$BIND9_OUT_GFW"
+        grep -v '#' "$DOMAINS_LOCAL_US" | while read -r line; do
+            [ -z "$line" ] && continue
+            printf 'zone "%s" { type forward; forward only; forwarders {%s};};\n' "$line" "$FWD_US_BIND9"
+        done >> "$LIST_WORK"
 
+        # github domains excluded from gfwlist (handled via domains.localadd_us)
+        grep -v github "$LIST_TMP" \
+            | sed "s/^/zone \"/;s/$/\" { type forward; forward only; forwarders {${FWD_GLOBAL_BIND9}};};/" \
+            >> "$LIST_WORK"
+
+        sort "$LIST_WORK" | uniq | sed "$BIND9_EXCLUSIONS" > "${BIND9_OUT_GFW}.new"
+        mv "${BIND9_OUT_GFW}.new" "$BIND9_OUT_GFW"
+    fi
+
+    # google.china → BIND9_OUT_GGCN, promoted only if the fetch is non-empty.
     fetch_google_china > "$LIST_TMP"
-    sed "s/^/zone \"/;s/$/\" { type forward; forward only; forwarders {${FWD_CHINA_BIND9}};};/" "$LIST_TMP" \
-        | sort | uniq > "$BIND9_OUT_GGCN"
+    if [ -s "$LIST_TMP" ]; then
+        sed "s/^/zone \"/;s/$/\" { type forward; forward only; forwarders {${FWD_CHINA_BIND9}};};/" "$LIST_TMP" \
+            | sort | uniq > "${BIND9_OUT_GGCN}.new"
+        mv "${BIND9_OUT_GGCN}.new" "$BIND9_OUT_GGCN"
+    else
+        echo "WARNING: google.china fetch returned empty result; keeping existing $BIND9_OUT_GGCN" >&2
+    fi
 
     rm -f "$LIST_TMP" "$LIST_WORK"
 
@@ -149,7 +163,11 @@ generate_dnsmasq() {
     rm -f "$LIST_TMP" "$LIST_WORK"
 
     fetch_gfwlist > "$LIST_TMP"
-    check_gfwlist "$LIST_TMP"
+    if ! check_gfwlist "$LIST_TMP"; then
+        echo "WARNING: keeping existing $DNSMASQ_OUT, skipping dnsmasq restart" >&2
+        rm -f "$LIST_TMP"
+        return
+    fi
     sed "s/^/server=\//;s/$/\/${FWD_DNSMASQ_1}/" "$LIST_TMP" > "$LIST_WORK"
     sed "s/^/server=\//;s/$/\/${FWD_DNSMASQ_2}/" "$LIST_TMP" >> "$LIST_WORK"
 
