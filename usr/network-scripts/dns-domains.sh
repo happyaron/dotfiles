@@ -41,6 +41,12 @@ fi
 GFWLIST_URL="https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt"
 GOOGLE_CHINA_URL="https://raw.githubusercontent.com/felixonmars/dnsmasq-china-list/master/google.china.conf"
 
+# Sanity floor: gfwlist normally yields several thousand domains. A result far
+# below this means a partial or poisoned fetch (raw.githubusercontent.com is
+# itself frequently blocked), so warn loudly rather than silently deploying a
+# degraded config.
+GFWLIST_MIN=1000
+
 FWD_GLOBAL_BIND9="1.1.1.1; 8.8.8.8; 8.8.4.4; 1.0.0.1;"
 # FWD_US_BIND9 loaded from network.conf
 FWD_CHINA_BIND9="119.29.29.29; 182.254.118.118; 223.5.5.5; 223.6.6.6; "
@@ -66,17 +72,32 @@ trap cleanup EXIT
 fetch_gfwlist() {
     wget -4qO- "$GFWLIST_URL" \
         | base64 -d \
-        | sed '/^!/d;/\*/d;/@/d;/%/d;/^$/d;/^\[/d;s/^|//;s/^|//;s/^\.//;s/^http\:\/\///;s/^https\:\/\///' \
+        | sed -e '/^!/d' -e '/^\[/d' -e '/^@/d' -e '/%/d' -e '/^$/d' \
+              -e 's/[[:space:]]*$//' -e 's/^[[:space:]]*//' \
+              -e 's/^|*//' -e 's#^https\?://##' -e 's/^\.//' \
         | cut -d'/' -f1 \
-        | grep '\.' \
-        | grep -v '[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}' \
-        | sort | uniq
+        | sed -e 's/[^.]*\*[^.]*\.//g' -e 's/\*//g' \
+        | grep -E '^([A-Za-z0-9_-]+\.)+([A-Za-z]{2,}|xn--[A-Za-z0-9-]+)$' \
+        | grep -v '^[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}$' \
+        | sort -u
 }
 
 fetch_google_china() {
     wget -4qO- "$GOOGLE_CHINA_URL" \
         | cut -d'/' -f2 \
         | sed '/^$/d;/^#/d'
+}
+
+# Abort if gfwlist came back empty; warn if it is suspiciously short.
+check_gfwlist() {
+    count=$(wc -l < "$1")
+    if [ "$count" -eq 0 ]; then
+        echo "ERROR: gfwlist fetch returned empty result, aborting" >&2
+        exit 1
+    fi
+    if [ "$count" -lt "$GFWLIST_MIN" ]; then
+        echo "WARNING: gfwlist returned only $count domains (expected >= $GFWLIST_MIN); the fetch may be partial or poisoned and the generated config is likely incomplete" >&2
+    fi
 }
 
 # --- BIND9 output ---------------------------------------------------------
@@ -100,10 +121,7 @@ generate_bind9() {
 
     # github domains excluded from gfwlist (handled via domains.localadd_us)
     fetch_gfwlist > "$LIST_TMP"
-    if [ ! -s "$LIST_TMP" ]; then
-        echo "ERROR: gfwlist fetch returned empty result, aborting" >&2
-        exit 1
-    fi
+    check_gfwlist "$LIST_TMP"
     grep -v github "$LIST_TMP" \
         | sed "s/^/zone \"/;s/$/\" { type forward; forward only; forwarders {${FWD_GLOBAL_BIND9}};};/" \
         >> "$LIST_WORK"
@@ -131,10 +149,7 @@ generate_dnsmasq() {
     rm -f "$LIST_TMP" "$LIST_WORK"
 
     fetch_gfwlist > "$LIST_TMP"
-    if [ ! -s "$LIST_TMP" ]; then
-        echo "ERROR: gfwlist fetch returned empty result, aborting" >&2
-        exit 1
-    fi
+    check_gfwlist "$LIST_TMP"
     sed "s/^/server=\//;s/$/\/${FWD_DNSMASQ_1}/" "$LIST_TMP" > "$LIST_WORK"
     sed "s/^/server=\//;s/$/\/${FWD_DNSMASQ_2}/" "$LIST_TMP" >> "$LIST_WORK"
 
