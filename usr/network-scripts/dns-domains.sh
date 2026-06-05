@@ -58,12 +58,23 @@ BIND9_OUT_GFW="/etc/bind/named.conf.gfwlist"
 BIND9_OUT_GGCN="/etc/bind/named.conf.ggcn"
 DNSMASQ_OUT="/etc/dnsmasq.d/domains.gfwlist"
 
+# On-disk cache of the last-good parsed lists. A cache younger than the TTL is
+# used directly without touching the network; a failed or short fetch falls
+# back to the cache so transient GitHub blocking never degrades the config.
+# Both are overridable from network.conf.
+CACHE_DIR="${CACHE_DIR:-/var/cache/dns-domains}"
+CACHE_TTL_MIN="${CACHE_TTL_MIN:-360}"
+CACHE_GFW="${CACHE_DIR}/gfwlist.cache"
+CACHE_GGCN="${CACHE_DIR}/google.china.cache"
+mkdir -p "$CACHE_DIR"
+
 TMP_DIR="${TMPDIR:-/tmp}"
 LIST_TMP="${TMP_DIR}/dns-domains.$$.tmp"
 LIST_WORK="${TMP_DIR}/dns-domains.$$.work"
+LIST_FETCH="${TMP_DIR}/dns-domains.$$.fetch"
 
 cleanup() {
-    rm -f "$LIST_TMP" "$LIST_WORK" "${LIST_WORK}.out" \
+    rm -f "$LIST_TMP" "$LIST_WORK" "${LIST_WORK}.out" "$LIST_FETCH" \
           "${BIND9_OUT_GFW}.new" "${BIND9_OUT_GGCN}.new" "${DNSMASQ_OUT}.new"
 }
 trap cleanup EXIT
@@ -105,6 +116,57 @@ check_gfwlist() {
     return 0
 }
 
+# True if the cache file exists, is non-empty, and is younger than the TTL.
+cache_fresh() {
+    [ -s "$1" ] || return 1
+    [ -n "$(find "$1" -mmin -"$CACHE_TTL_MIN" 2>/dev/null)" ]
+}
+
+# Print a usable gfwlist to stdout: a fresh cache as-is, else a freshly fetched
+# and validated list (which refreshes the cache), else a stale cache. Returns
+# non-zero only when the fetch is unhealthy and no cache exists.
+get_gfwlist() {
+    if cache_fresh "$CACHE_GFW"; then
+        echo "INFO: using fresh cached gfwlist ($CACHE_GFW)" >&2
+        cat "$CACHE_GFW"
+        return 0
+    fi
+    fetch_gfwlist > "$LIST_FETCH"
+    if check_gfwlist "$LIST_FETCH"; then
+        cp "$LIST_FETCH" "$CACHE_GFW"
+        cat "$LIST_FETCH"
+        return 0
+    fi
+    if [ -s "$CACHE_GFW" ]; then
+        echo "WARNING: falling back to stale cached gfwlist ($CACHE_GFW)" >&2
+        cat "$CACHE_GFW"
+        return 0
+    fi
+    return 1
+}
+
+# Same pattern for google.china (validated only for non-emptiness).
+get_google_china() {
+    if cache_fresh "$CACHE_GGCN"; then
+        echo "INFO: using fresh cached google.china ($CACHE_GGCN)" >&2
+        cat "$CACHE_GGCN"
+        return 0
+    fi
+    fetch_google_china > "$LIST_FETCH"
+    if [ -s "$LIST_FETCH" ]; then
+        cp "$LIST_FETCH" "$CACHE_GGCN"
+        cat "$LIST_FETCH"
+        return 0
+    fi
+    if [ -s "$CACHE_GGCN" ]; then
+        echo "WARNING: falling back to stale cached google.china ($CACHE_GGCN)" >&2
+        cat "$CACHE_GGCN"
+        return 0
+    fi
+    echo "WARNING: google.china fetch returned empty result and no cache available" >&2
+    return 1
+}
+
 # --- BIND9 output ---------------------------------------------------------
 
 # Domains excluded from BIND9 forwarding so they resolve via the default path
@@ -114,9 +176,8 @@ BIND9_EXCLUSIONS='/openai.com/d;/chatgpt.com/d;/oaistatic.com/d;/oaiusercontent.
 generate_bind9() {
     rm -f "$LIST_TMP" "$LIST_WORK"
 
-    # gfwlist + localadd → BIND9_OUT_GFW, promoted only if gfwlist is healthy.
-    fetch_gfwlist > "$LIST_TMP"
-    if check_gfwlist "$LIST_TMP"; then
+    # gfwlist + localadd → BIND9_OUT_GFW, promoted only if a usable list exists.
+    if get_gfwlist > "$LIST_TMP"; then
         grep -v '#' "$DOMAINS_LOCAL" | while read -r line; do
             [ -z "$line" ] && continue
             printf 'zone "%s" { type forward; forward only; forwarders {%s};};\n' "$line" "$FWD_GLOBAL_BIND9"
@@ -134,16 +195,17 @@ generate_bind9() {
 
         sort "$LIST_WORK" | uniq | sed "$BIND9_EXCLUSIONS" > "${BIND9_OUT_GFW}.new"
         mv "${BIND9_OUT_GFW}.new" "$BIND9_OUT_GFW"
+    else
+        echo "WARNING: no usable gfwlist; keeping existing $BIND9_OUT_GFW" >&2
     fi
 
-    # google.china → BIND9_OUT_GGCN, promoted only if the fetch is non-empty.
-    fetch_google_china > "$LIST_TMP"
-    if [ -s "$LIST_TMP" ]; then
+    # google.china → BIND9_OUT_GGCN, promoted only if a usable list exists.
+    if get_google_china > "$LIST_TMP"; then
         sed "s/^/zone \"/;s/$/\" { type forward; forward only; forwarders {${FWD_CHINA_BIND9}};};/" "$LIST_TMP" \
             | sort | uniq > "${BIND9_OUT_GGCN}.new"
         mv "${BIND9_OUT_GGCN}.new" "$BIND9_OUT_GGCN"
     else
-        echo "WARNING: google.china fetch returned empty result; keeping existing $BIND9_OUT_GGCN" >&2
+        echo "WARNING: keeping existing $BIND9_OUT_GGCN" >&2
     fi
 
     rm -f "$LIST_TMP" "$LIST_WORK"
@@ -162,9 +224,8 @@ generate_bind9() {
 generate_dnsmasq() {
     rm -f "$LIST_TMP" "$LIST_WORK"
 
-    fetch_gfwlist > "$LIST_TMP"
-    if ! check_gfwlist "$LIST_TMP"; then
-        echo "WARNING: keeping existing $DNSMASQ_OUT, skipping dnsmasq restart" >&2
+    if ! get_gfwlist > "$LIST_TMP"; then
+        echo "WARNING: no usable gfwlist; keeping existing $DNSMASQ_OUT, skipping dnsmasq restart" >&2
         rm -f "$LIST_TMP"
         return
     fi
