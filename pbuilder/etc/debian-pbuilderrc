@@ -17,10 +17,10 @@ APTCACHEHARDLINK=no
 ## Seperate APT cache, not enabled by default
 # APTCACHE="$HOME/pbuilder/aptcache/$DIST-$ARCH/"
 ## ccache — persist compiler cache across builds
-export CCACHE_DIR="/var/cache/pbuilder/ccache"
-export PATH="/usr/lib/ccache:${PATH}"
+export CCACHEDIR="/var/cache/pbuilder/ccache"
+#export PATH="/usr/lib/ccache:${PATH}"
 EXTRAPACKAGES="ccache eatmydata"
-BINDMOUNTS="${CCACHE_DIR}"
+#BINDMOUNTS="${CCACHE_DIR}"
 ## eatmydata — skip fsyncs to speed up package installs
 EATMYDATA=yes
 ## Parallel build (set here so sudoers does not need SETENV)
