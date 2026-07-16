@@ -234,7 +234,9 @@ elif [ "$PROCEED" = "true" ]; then
         --buildresult $BASEDIR/result/$DIST-$DEB_TARGET_ARCH \
         --logfile $LOG \
         "$@" $DSCFILE
+    RC=$?
     [ -n "$DEPSDIR" ] && rm -f "$DEPSDIR/Packages"
+    exit $RC
 elif [ "$LOGIN" = "true" ]; then
     FUNC_PBUILDER_TMP
     run_pbuilder
