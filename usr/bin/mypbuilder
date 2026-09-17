@@ -1,9 +1,36 @@
 #!/bin/sh
 # Author: Aron Xu <user@example.com>
 # License: GPL-3
+#
+# Usage: mypbuilder DIST ARCH OPERATION [DSCFILE|SCRIPT] [DEPSDIR] [-- EXTRA ARGS]
+#
+# Operations:
+#   create       bootstrap $BASEDIR/base/DIST-ARCH-base.tar.zst
+#   update       apt-get update/dist-upgrade the chroot and save it
+#   build        build DSCFILE, results in $BASEDIR/result/DIST-ARCH
+#   debuild      build the unpacked source tree in the current directory
+#   login        interactive root shell, changes are discarded
+#   edit         interactive root shell, changes are saved
+#   execute      run SCRIPT inside the chroot, changes are discarded
+#   edit-script  run SCRIPT inside the chroot, changes are saved
+#   autopkgtest  run the autopkgtests of DSCFILE
+#   clean        remove leftovers of interrupted sessions
+#
+# DEPSDIR is a directory of locally built .debs made available to build.
+# EXTRA ARGS after "--" go to the build tool (build, debuild) or to SCRIPT.
+#
+# Backend selection with MYPBUILDER_BACKEND:
+#   sbuild    sbuild/mmdebstrap in unshare mode, no root needed (default when
+#             both are installed)
+#   pbuilder  pbuilder via sudo
+# Both backends share the tarballs, rc files, logs and results below BASEDIR.
+# The rc file $BASEDIR/etc/DIST-ARCH is a pbuilderrc; the sbuild backend reads
+# MIRRORSITE, COMPONENTS, OTHERMIRROR, EXTRAPACKAGES, DEB_BUILD_OPTIONS and the
+# --variant/--keyring entries of DEBOOTSTRAPOPTS from it.
 
-BASEDIR="$HOME/pbuilder"
+BASEDIR=${MYPBUILDER_BASEDIR:-$HOME/pbuilder}
 PBUILDER_TMP=/tmp/pbuilder
+SYSPATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 DIST=$1
 DEB_TARGET_ARCH=$2
@@ -11,12 +38,54 @@ OPERATION=$3
 DSCFILE=$4
 DEPSDIR=$5
 
-for i in dpkg-architecture pbuilder pigz debootstrap; do
-    if ! PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin command -v "$i" > /dev/null 2>&1; then
-        printf 'E: Required command "%s" not found.\n' "$i" 1>&2
-        exit 1
+# DSCFILE and DEPSDIR are optional, so "--" may take either position.
+NPOS=5
+if [ "$DSCFILE" = "--" ]; then
+    DSCFILE=
+    DEPSDIR=
+    NPOS=4
+elif [ "$DEPSDIR" = "--" ]; then
+    DEPSDIR=
+fi
+
+have_cmd() {
+    PATH=$SYSPATH command -v "$1" > /dev/null 2>&1
+}
+
+need_cmd() {
+    for i in "$@"; do
+        if ! have_cmd "$i"; then
+            printf 'E: Required command "%s" not found.\n' "$i" 1>&2
+            exit 1
+        fi
+    done
+}
+
+BACKEND=$MYPBUILDER_BACKEND
+if [ -z "$BACKEND" ]; then
+    if have_cmd sbuild && have_cmd mmdebstrap; then
+        BACKEND=sbuild
+    else
+        BACKEND=pbuilder
     fi
-done
+fi
+
+case $BACKEND in
+    sbuild )
+        need_cmd dpkg-architecture sbuild mmdebstrap zstd
+        if ! grep -q "^$(id -un):" /etc/subuid; then
+            printf 'E: No subordinate uid range for "%s" in /etc/subuid, needed by the sbuild backend.\n' "$(id -un)" 1>&2
+            exit 1
+        fi
+        ;;
+    pbuilder )
+        need_cmd dpkg-architecture pbuilder zstd debootstrap
+        ;;
+    * )
+        printf 'E: MYPBUILDER_BACKEND must be "sbuild" or "pbuilder", not "%s".\n' "$BACKEND" 1>&2
+        exit 1
+        ;;
+esac
 
 DEBOOTSTRAP=debootstrap
 
@@ -29,6 +98,8 @@ else
     DEB_TARGET_ARCH_BITS=`dpkg-architecture -a$DEB_TARGET_ARCH -qDEB_HOST_ARCH_BITS`
 fi
 
+# linux32 personality for 32-bit chroots on a 64-bit host. sbuild sets it
+# itself; it is only needed for pbuilder and mmdebstrap.
 unset ARG
 if [ $DEB_HOST_ARCH_BITS -gt $DEB_TARGET_ARCH_BITS ]; then
     ARG="$ARG linux32";
@@ -43,11 +114,16 @@ else
     DISTRO=$DIST
 fi
 
+RCFILE=$BASEDIR/etc/$DIST-$DEB_TARGET_ARCH
+BASETAR=$BASEDIR/base/$DIST-$DEB_TARGET_ARCH-base.tar.zst
+RESULTDIR=$BASEDIR/result/$DIST-$DEB_TARGET_ARCH
+LOGDIR=$BASEDIR/logs/$DIST-$DEB_TARGET_ARCH
+
 if ! [ -d $BASEDIR/etc ]; then
     printf "E: $BASEDIR/etc does not exist, BASEDIR not valid.\n" 1>&2
     exit 1
-elif ! [ -s $BASEDIR/etc/$DIST-$DEB_TARGET_ARCH ]; then
-    printf "E: $BASEDIR/etc/$DIST-$DEB_TARGET_ARCH pbuilderrc file does not exist or empty.\n" 1>&2
+elif ! [ -s "$RCFILE" ]; then
+    printf "E: $RCFILE pbuilderrc file does not exist or empty.\n" 1>&2
     exit 1
 fi
 
@@ -62,11 +138,6 @@ if [ -n "$DEPSDIR" ]; then
         exit 1
     fi
     DEPSDIR=$(cd "$DEPSDIR" && pwd)
-    if ! command -v apt-ftparchive > /dev/null 2>&1; then
-        printf 'E: apt-ftparchive not found. Install apt-utils.\n' 1>&2
-        exit 1
-    fi
-    (cd "$DEPSDIR" && apt-ftparchive packages . > Packages)
 fi
 
 if ! [ -d $BASEDIR/hooks ]; then
@@ -74,71 +145,52 @@ if ! [ -d $BASEDIR/hooks ]; then
     mkdir -p $BASEDIR/hooks
 fi
 
-for i in logs result; do
-    if ! [ -d $BASEDIR/$i/$DIST-$DEB_TARGET_ARCH ]; then
-        printf "W: Directory $BASEDIR/$i/$DIST-$DEB_TARGET_ARCH does not exist, creating.\n" 1>&2
-        mkdir -p $BASEDIR/$i/$DIST-$DEB_TARGET_ARCH
+for i in "$RESULTDIR" "$LOGDIR"; do
+    if ! [ -d "$i" ]; then
+        printf "W: Directory $i does not exist, creating.\n" 1>&2
+        mkdir -p "$i"
     fi
 done
 
-PBUILDER_ACTION=$OPERATION
-if [ "$OPERATION" = "create" ]; then
-    PROCEED=true
-elif ! [ -s $BASEDIR/base/$DIST-$DEB_TARGET_ARCH-base.tgz ]; then
-    printf "E: $BASEDIR/base/$DIST-$DEB_TARGET_ARCH-base.tgz does not exist or empty.\n" 1>&2
-    exit 1
-else
-    case $OPERATION in
-        build )
-            if ! [ -s $DSCFILE ]; then
-                printf "E: $DSCFILE does not exist or empty.\n" 1>&2
-                exit 1
-            else
-                BASENAME=`basename $DSCFILE .dsc`
-            fi
-            PROCEED=true
-            ;;
-        autopkgtest )
-            if ! [ -s $DSCFILE ]; then
-                printf "E: $DSCFILE does not exist or empty.\n" 1>&2
-                exit 1
-            else
-                BASENAME=`basename $DSCFILE .dsc`
-            fi
-            AUTOPKGTEST=true
-            ;;
-        update|clean|execute|debuild )
-            PROCEED=true
-            ;;
-        login )
-            LOGIN=true
-            ;;
-        edit )
-            EDIT=true
-            PBUILDER_ACTION=login
-            ;;
-        edit-script )
-            EXEC=true
-            PBUILDER_ACTION=execute
-            ;;
-        * )
-            printf "E: Operations in build|create|update|login|execute|edit|edit-script|autopkgtest.\n" 1>&2
+case $OPERATION in
+    build|autopkgtest )
+        if ! [ -s "$DSCFILE" ]; then
+            printf "E: $DSCFILE does not exist or empty.\n" 1>&2
             exit 1
-            ;;
-    esac
+        fi
+        BASENAME=`basename $DSCFILE .dsc`
+        ;;
+    execute|edit-script )
+        if ! [ -f "$DSCFILE" ]; then
+            printf 'E: Script "%s" does not exist.\n' "$DSCFILE" 1>&2
+            exit 1
+        fi
+        BASENAME=`basename $DSCFILE`
+        ;;
+    create|update|clean|debuild|login|edit )
+        ;;
+    * )
+        printf "E: Operations in build|debuild|create|update|clean|login|edit|execute|edit-script|autopkgtest.\n" 1>&2
+        exit 1
+        ;;
+esac
+
+if [ "$OPERATION" != "create" ] && ! [ -s "$BASETAR" ]; then
+    printf "E: $BASETAR does not exist or empty.\n" 1>&2
+    exit 1
 fi
 
 DATUM=`/bin/date +"%Y%m%d-%H%M"`
 if ! [ -z $BASENAME ]; then
-    LOG=$BASEDIR/logs/$DIST-$DEB_TARGET_ARCH/${OPERATION}_${BASENAME}_${DATUM}.log
+    LOG=$LOGDIR/${OPERATION}_${BASENAME}_${DATUM}.log
 else
-    LOG=$BASEDIR/logs/$DIST-$DEB_TARGET_ARCH/${OPERATION}_${DATUM}.log
+    LOG=$LOGDIR/${OPERATION}_${DATUM}.log
 fi
 
 # Consume the positional parameters already assigned above.
 # dash treats `shift n` with n>$# as a fatal error, so check first.
-if [ $# -ge 5 ]; then
-    shift 5
+if [ $# -ge $NPOS ]; then
+    shift $NPOS
 else
     shift $#
 fi
@@ -147,6 +199,12 @@ if [ "${1:-}" = "--" ]; then
     shift
 fi
 
+NJOBS=`nproc`
+
+#
+# pbuilder backend
+#
+
 FUNC_PBUILDER_TMP() {
     if ! [ -d $PBUILDER_TMP ]; then
         printf "W: $PBUILDER_TMP does not exist, creating.\n" 1>&2
@@ -154,36 +212,20 @@ FUNC_PBUILDER_TMP() {
     fi
 }
 
-NJOBS=`nproc`
-# DEB_BUILD_OPTIONS belongs in ~/pbuilder/etc/<dist>-<arch> as `export DEB_BUILD_OPTIONS=...`
-# so it survives sudo without needing SETENV in sudoers.
-PBUILDER_CMD="sudo $ARG pbuilder $PBUILDER_ACTION"
-COMMON_ARGS="--override-config \
-    --autocleanaptcache \
-    --compressprog pigz \
-    --debootstrap $DEBOOTSTRAP \
-    --architecture $DEB_TARGET_ARCH \
-    --distribution $DISTRO \
-    --configfile $BASEDIR/etc/$DIST-$DEB_TARGET_ARCH \
-    --hookdir $BASEDIR/hooks \
-    --basetgz $BASEDIR/base/$DIST-$DEB_TARGET_ARCH-base.tgz"
-
-if [ -n "$DEPSDIR" ]; then
-    COMMON_ARGS="$COMMON_ARGS --bindmounts $DEPSDIR"
-fi
-
 run_pbuilder() {
+    # DEB_BUILD_OPTIONS belongs in the rc as `export DEB_BUILD_OPTIONS=...`
+    # so it survives sudo without needing SETENV in sudoers.
     if [ -n "$DEPSDIR" ]; then
-        $PBUILDER_CMD $COMMON_ARGS \
+        sudo $ARG pbuilder $PBUILDER_ACTION $COMMON_ARGS \
+            --bindmounts "$DEPSDIR" \
             --othermirror "deb [trusted=yes] file://$DEPSDIR ./" \
             "$@"
     else
-        $PBUILDER_CMD $COMMON_ARGS "$@"
+        sudo $ARG pbuilder $PBUILDER_ACTION $COMMON_ARGS "$@"
     fi
 }
 
-if [ "$AUTOPKGTEST" = "true" ]; then
-    FUNC_PBUILDER_TMP
+pb_autopkgtest() {
     for i in autopkgtest autopkgtest-virt-chroot; do
         if ! command -v "$i" > /dev/null 2>&1; then
             printf 'E: Required command "%s" not found. Install autopkgtest.\n' "$i" 1>&2
@@ -192,8 +234,8 @@ if [ "$AUTOPKGTEST" = "true" ]; then
     done
     AUTOPKGTEST_CHROOT=$PBUILDER_TMP/autopkgtest-$$
     sudo mkdir -p "$AUTOPKGTEST_CHROOT"
-    sudo tar -xzf $BASEDIR/base/$DIST-$DEB_TARGET_ARCH-base.tgz -C "$AUTOPKGTEST_CHROOT"
-    AUTOPKGTEST_OUTDIR=$BASEDIR/logs/$DIST-$DEB_TARGET_ARCH/autopkgtest_${BASENAME}_${DATUM}
+    sudo tar -xf "$BASETAR" -C "$AUTOPKGTEST_CHROOT"
+    AUTOPKGTEST_OUTDIR=$LOGDIR/autopkgtest_${BASENAME}_${DATUM}
     rm -rf "$AUTOPKGTEST_OUTDIR"
     mkdir -p "$AUTOPKGTEST_OUTDIR"
     CHROOT_MOUNTS=""
@@ -228,24 +270,325 @@ if [ "$AUTOPKGTEST" = "true" ]; then
     cleanup_chroot
     trap - EXIT
     exit $AUTOPKGTEST_RC
-elif [ "$PROCEED" = "true" ]; then
+}
+
+pb_main() {
+    COMMON_ARGS="--override-config \
+        --autocleanaptcache \
+        --compressprog zstd \
+        --debootstrap $DEBOOTSTRAP \
+        --architecture $DEB_TARGET_ARCH \
+        --distribution $DISTRO \
+        --configfile $RCFILE \
+        --hookdir $BASEDIR/hooks \
+        --basetgz $BASETAR"
+
+    if [ -n "$DEPSDIR" ]; then
+        if ! command -v apt-ftparchive > /dev/null 2>&1; then
+            printf 'E: apt-ftparchive not found. Install apt-utils.\n' 1>&2
+            exit 1
+        fi
+        (cd "$DEPSDIR" && apt-ftparchive packages . > Packages)
+    fi
+
     FUNC_PBUILDER_TMP
-    run_pbuilder \
-        --buildresult $BASEDIR/result/$DIST-$DEB_TARGET_ARCH \
-        --logfile $LOG \
-        "$@" $DSCFILE
-    RC=$?
-    [ -n "$DEPSDIR" ] && rm -f "$DEPSDIR/Packages"
-    exit $RC
-elif [ "$LOGIN" = "true" ]; then
-    FUNC_PBUILDER_TMP
-    run_pbuilder
-elif [ "$EDIT" = "true" ]; then
-    FUNC_PBUILDER_TMP
-    run_pbuilder --save-after-login
-elif [ "$EXEC" = "true" ]; then
-    FUNC_PBUILDER_TMP
-    run_pbuilder \
-        --logfile $LOG \
-        --save-after-exec
-fi
+    case $OPERATION in
+        autopkgtest )
+            pb_autopkgtest
+            ;;
+        build|debuild|create|update|clean )
+            PBUILDER_ACTION=$OPERATION
+            run_pbuilder \
+                --buildresult "$RESULTDIR" \
+                --logfile "$LOG" \
+                "$@" ${DSCFILE:+"$DSCFILE"}
+            RC=$?
+            [ -n "$DEPSDIR" ] && rm -f "$DEPSDIR/Packages"
+            exit $RC
+            ;;
+        login )
+            PBUILDER_ACTION=login
+            run_pbuilder
+            ;;
+        edit )
+            PBUILDER_ACTION=login
+            run_pbuilder --save-after-login
+            ;;
+        execute )
+            PBUILDER_ACTION=execute
+            run_pbuilder --logfile "$LOG" -- "$DSCFILE" "$@"
+            ;;
+        edit-script )
+            PBUILDER_ACTION=execute
+            run_pbuilder --logfile "$LOG" --save-after-exec -- "$DSCFILE" "$@"
+            ;;
+    esac
+}
+
+#
+# sbuild backend
+#
+# Builds run in sbuild's unshare mode straight from the pbuilder tarball.
+# sbuild-update/sbuild-shell are no-ops in unshare mode, so the chroot is
+# created and modified with mmdebstrap: the tarball is unpacked into a user
+# namespace, hooks run inside it, and the result is streamed back through
+# zstd.  A hook exiting non-zero aborts mmdebstrap, so nothing is saved.
+
+# Print the value of a variable set by the pbuilderrc (bash syntax).
+rc_value() {
+    DIST=$DIST ARCH=$DEB_TARGET_ARCH DISTRIBUTION=$DISTRO ARCHITECTURE=$DEB_TARGET_ARCH \
+        bash -c '. "$1" 1>&2; printf "%s\n" "${!2}"' rc "$RCFILE" "$1"
+}
+
+shquote() {
+    printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+gen_sources_list() {
+    printf 'deb %s %s %s\n' "$MIRRORSITE" "$DISTRO" "$COMPONENTS"
+    printf '#deb-src %s %s %s\n' "$MIRRORSITE" "$DISTRO" "$COMPONENTS"
+    if [ -n "$OTHERMIRROR" ]; then
+        printf '%s\n' "$OTHERMIRROR" | tr '|' '\n' | sed 's/^ *//; s/ *$//'
+    fi
+}
+
+# Run mmdebstrap with its tar stream on stdout.  Status output goes to the
+# terminal and, when MMLOG is set, also to that file.  The exit status is
+# written to $MMRC because the caller may run this in a pipeline.
+mm_exec() {
+    if [ -n "$MMLOG" ]; then
+        { { $ARG mmdebstrap "$@" 2>&1 1>&3 3>&-; echo $? > "$MMRC"; } | tee "$MMLOG" 1>&2; } 3>&1
+    else
+        $ARG mmdebstrap "$@"
+        echo $? > "$MMRC"
+    fi
+}
+
+# mm_save DEST mmdebstrap-args...: the args must name "-" as TARGET; the
+# stream is compressed with zstd and replaces DEST only on success.
+mm_save() {
+    dest=$1
+    shift
+    mm_exec "$@" | zstd -q -T0 > "$dest.new"
+    ZSTD_RC=$?
+    MM_RC=$(cat "$MMRC")
+    if [ "$MM_RC" -ne 0 ] || [ "$ZSTD_RC" -ne 0 ]; then
+        rm -f "$dest.new"
+        printf 'E: Chroot not saved, %s is unchanged.\n' "$dest" 1>&2
+        return 1
+    fi
+    mv "$dest.new" "$dest"
+    printf 'I: Saved %s\n' "$dest"
+}
+
+# mm_reuse DEST hooks...: run hooks in the existing chroot.  With an empty
+# DEST the changes are discarded, otherwise the chroot is saved to DEST.
+# The tarball is unpacked by hand because mmdebstrap's tar-in only decompresses
+# what tar itself recognises on a pipe.  mmtarfilter drops the char and block
+# devices, which cannot be created in a user namespace; mmdebstrap puts them
+# back when it writes the tarball out.
+mm_reuse() {
+    dest=$1
+    shift
+    set -- --mode=unshare --variant=custom \
+        --skip=update,setup,cleanup \
+        --setup-hook="zstd -dc $BASETAR | mmtarfilter --type-exclude=3 --type-exclude=4 | tar --directory \"\$1\" --extract" \
+        "$@" ''
+    if [ -n "$dest" ]; then
+        mm_save "$dest" "$@" -
+    else
+        mm_exec "$@" /dev/null
+        return "$(cat "$MMRC")"
+    fi
+}
+
+sb_create() {
+    set -- --mode=unshare --format=tar \
+        --variant="$VARIANT" \
+        --arch="$DEB_TARGET_ARCH" \
+        --components="$COMPONENTS"
+    if [ -n "$KEYRING" ]; then
+        set -- "$@" --keyring="$KEYRING"
+    fi
+    if [ -n "$EXTRAPACKAGES" ]; then
+        set -- "$@" --include="$EXTRAPACKAGES"
+    fi
+    set -- "$@" "$DISTRO" -
+    if [ -n "$MIRRORSITE" ]; then
+        # "deb ..." arguments end up in /etc/apt/sources.list, a file
+        # argument would go to sources.list.d instead.
+        gen_sources_list > "$TMPD/sources.list"
+        while read -r line; do
+            case $line in
+                deb* ) set -- "$@" "$line" ;;
+            esac
+        done < "$TMPD/sources.list"
+    fi
+    MMLOG=$LOG
+    mm_save "$BASETAR" "$@"
+}
+
+sb_update() {
+    # Like pbuilder --override-config: sources.list and resolv.conf are
+    # refreshed from the rc and the host on every update.
+    cat /etc/resolv.conf > "$TMPD/resolv.conf"
+    set -- --customize-hook="upload $TMPD/resolv.conf /etc/resolv.conf"
+    if [ -n "$MIRRORSITE" ]; then
+        gen_sources_list > "$TMPD/sources.list"
+        set -- "$@" --customize-hook="upload $TMPD/sources.list /etc/apt/sources.list"
+    fi
+    APT="chroot \"\$1\" $CHROOT_ENV DEBIAN_FRONTEND=noninteractive apt-get"
+    set -- "$@" \
+        --customize-hook="$APT update" \
+        --customize-hook="$APT -y dist-upgrade"
+    if [ -n "$EXTRAPACKAGES" ]; then
+        set -- "$@" --customize-hook="$APT -y install $EXTRAPACKAGES"
+    fi
+    set -- "$@" --customize-hook="$APT clean"
+    MMLOG=$LOG
+    mm_reuse "$BASETAR" "$@"
+}
+
+# pbuilder packs its tarballs from ./* so they carry no "./" entry, and the
+# unpacked session root then keeps the 0700 mode of mkdtemp.  sbuild and
+# autopkgtest run parts of the session as an unprivileged user and fail on
+# that.  Tarballs written by mmdebstrap have the entry near the start, after
+# the device nodes.
+sb_ensure_root_entry() {
+    if zstd -dc "$BASETAR" 2>/dev/null | tar -t 2>/dev/null | head -n 100 | grep -qx './'; then
+        return
+    fi
+    printf 'W: %s has no "./" entry, repacking it once.\n' "$BASETAR" 1>&2
+    mm_reuse "$BASETAR" || exit 1
+}
+
+sb_build() {
+    sb_ensure_root_entry
+    printf '%s\n' "\$log_dir = '$LOGDIR';" "1;" > "$TMPD/sbuild.conf"
+    if [ -n "$DEPSDIR" ]; then
+        set -- --extra-package="$DEPSDIR" "$@"
+    fi
+    SBUILD_CONFIG=$TMPD/sbuild.conf sbuild \
+        --chroot-mode=unshare \
+        --chroot="$BASETAR" \
+        --dist="$DISTRO" \
+        --arch="$DEB_TARGET_ARCH" \
+        --build-dir="$RESULTDIR" \
+        "$@"
+}
+
+sb_shell() {
+    mm_reuse "$1" --customize-hook="chroot \"\$1\" $CHROOT_ENV bash -l"
+}
+
+sb_script() {
+    dest=$1
+    shift
+    RUN="chroot \"\$1\" $CHROOT_ENV /runscript"
+    for a in "$@"; do
+        RUN="$RUN $(shquote "$a")"
+    done
+    MMLOG=$LOG
+    mm_reuse "$dest" \
+        --customize-hook="upload $(shquote "$DSCFILE") /runscript" \
+        --customize-hook='chmod 755 "$1/runscript"' \
+        --customize-hook="$RUN" \
+        --customize-hook='rm -f "$1/runscript"'
+}
+
+sb_autopkgtest() {
+    need_cmd autopkgtest autopkgtest-virt-unshare
+    sb_ensure_root_entry
+    AUTOPKGTEST_OUTDIR=$LOGDIR/autopkgtest_${BASENAME}_${DATUM}
+    rm -rf "$AUTOPKGTEST_OUTDIR"
+    mkdir -p "$AUTOPKGTEST_OUTDIR"
+    printf "I: Running autopkgtest on %s\n" "$DSCFILE"
+    autopkgtest "$DSCFILE" \
+        -o "$AUTOPKGTEST_OUTDIR" \
+        --build-parallel=${NJOBS} \
+        -- unshare \
+        --tarball "$BASETAR" \
+        --arch "$DEB_TARGET_ARCH" \
+        --release "$DISTRO"
+}
+
+# Sessions are unpacked below $TMPDIR and removed when they end; an
+# interrupted one leaves a directory owned by subordinate uids behind.
+sb_clean() {
+    for d in "${TMPDIR:-/tmp}"/tmp.sbuild.* "${TMPDIR:-/tmp}"/mmdebstrap.*; do
+        [ -d "$d" ] || continue
+        printf 'I: Removing %s\n' "$d"
+        unshare --map-auto --map-root-user rm -rf "$d"
+    done
+}
+
+sb_main() {
+    TMPD=$(mktemp -d)
+    trap 'rm -rf "$TMPD"' EXIT
+    MMRC=$TMPD/mmdebstrap.rc
+    MMLOG=
+    CHROOT_ENV="env PATH=$SYSPATH HOME=/root LC_ALL=C.UTF-8"
+
+    MIRRORSITE=$(rc_value MIRRORSITE)
+    COMPONENTS=$(rc_value COMPONENTS)
+    COMPONENTS=${COMPONENTS:-main}
+    OTHERMIRROR=$(rc_value OTHERMIRROR)
+    EXTRAPACKAGES=$(rc_value EXTRAPACKAGES)
+    DEB_BUILD_OPTIONS=$(rc_value DEB_BUILD_OPTIONS)
+    if [ -n "$DEB_BUILD_OPTIONS" ]; then
+        export DEB_BUILD_OPTIONS
+    fi
+    VARIANT=buildd
+    KEYRING=
+    for opt in $(rc_value 'DEBOOTSTRAPOPTS[@]'); do
+        case $opt in
+            --variant=* ) VARIANT=${opt#--variant=} ;;
+            --keyring=* ) KEYRING=${opt#--keyring=} ;;
+        esac
+    done
+
+    if [ -n "$(ls -A "$BASEDIR/hooks")" ]; then
+        printf 'W: Hooks in %s are not run by the sbuild backend.\n' "$BASEDIR/hooks" 1>&2
+    fi
+
+    case $OPERATION in
+        create )
+            sb_create
+            ;;
+        update )
+            sb_update
+            ;;
+        build|debuild )
+            sb_build "$@" ${DSCFILE:+"$DSCFILE"}
+            ;;
+        login )
+            printf 'I: Changes made in this shell are discarded.\n'
+            sb_shell ''
+            ;;
+        edit )
+            printf 'I: Exit the shell with status 0 to save the chroot, non-zero to discard.\n'
+            sb_shell "$BASETAR"
+            ;;
+        execute )
+            sb_script '' "$@"
+            ;;
+        edit-script )
+            sb_script "$BASETAR" "$@"
+            ;;
+        autopkgtest )
+            sb_autopkgtest
+            ;;
+        clean )
+            sb_clean
+            ;;
+    esac
+}
+
+case $BACKEND in
+    sbuild )
+        sb_main "$@"
+        ;;
+    pbuilder )
+        pb_main "$@"
+        ;;
+esac
