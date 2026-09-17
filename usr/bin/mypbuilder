@@ -5,8 +5,11 @@
 # Usage: mypbuilder DIST ARCH OPERATION [DSCFILE|SCRIPT] [DEPSDIR] [-- EXTRA ARGS]
 #
 # Operations:
+#   check        report what this host can do for DIST-ARCH and how to fix it
 #   create       bootstrap $BASEDIR/base/DIST-ARCH-base.tar.zst
-#   update       apt-get update/dist-upgrade the chroot and save it
+#   create-vm    build the autopkgtest VM image $BASEDIR/base/DIST-ARCH.img
+#   update       apt-get update/dist-upgrade the chroot and save it; the VM
+#                image is rebuilt as well when there is one
 #   build        build DSCFILE, results in $BASEDIR/result/DIST-ARCH
 #   debuild      build the unpacked source tree in the current directory
 #   login        interactive root shell, changes are discarded
@@ -16,17 +19,35 @@
 #   autopkgtest  run the autopkgtests of DSCFILE
 #   clean        remove leftovers of interrupted sessions
 #
-# DEPSDIR is a directory of locally built .debs made available to build.
-# EXTRA ARGS after "--" go to the build tool (build, debuild) or to SCRIPT.
+# DEPSDIR is a directory of locally built .debs made available to build and
+# autopkgtest.  EXTRA ARGS after "--" go to the build tool (build, debuild),
+# to SCRIPT, or to autopkgtest.
 #
 # Backend selection with MYPBUILDER_BACKEND:
 #   sbuild    sbuild/mmdebstrap in unshare mode, no root needed (default when
 #             both are installed)
-#   pbuilder  pbuilder via sudo
+#   pbuilder  pbuilder via sudo, the fallback
 # Both backends share the tarballs, rc files, logs and results below BASEDIR.
 # The rc file $BASEDIR/etc/DIST-ARCH is a pbuilderrc; the sbuild backend reads
 # MIRRORSITE, COMPONENTS, OTHERMIRROR, EXTRAPACKAGES, DEB_BUILD_OPTIONS and the
 # --variant/--keyring entries of DEBOOTSTRAPOPTS from it.
+#
+# autopkgtest takes the most capable testbed the host allows, in this order,
+# and prints which one; MYPBUILDER_TESTBED=qemu|unshare|chroot forces one.
+#   qemu      autopkgtest-virt-qemu on $BASEDIR/base/DIST-ARCH.img.  The only
+#             tier that satisfies isolation-container, isolation-machine and
+#             needs-reboot.  Needs the image (create-vm), qemu for ARCH, write
+#             access to /dev/kvm and an ARCH the host CPU can accelerate.  The
+#             image is used through an overlay and never modified; every run
+#             starts with apt-get update and dist-upgrade (autopkgtest -U).
+#   unshare   autopkgtest-virt-unshare on the tarball, no root needed.  Needs
+#             subordinate uid/gid ranges.
+#   chroot    autopkgtest-virt-chroot on the tarball unpacked via sudo.
+# When $BASEDIR/result/DIST-ARCH holds the .changes of DSCFILE and it is newer
+# than the .dsc, the testbed installs those binaries instead of rebuilding.
+# The rc file may also set VMCPUS (default: nproc), VMRAM in MiB (default:
+# 4096) and VMSIZE for create-vm.  The VM gets the rc's sources.list but not
+# EXTRAPACKAGES.
 
 BASEDIR=${MYPBUILDER_BASEDIR:-$HOME/pbuilder}
 PBUILDER_TMP=/tmp/pbuilder
@@ -37,6 +58,11 @@ DEB_TARGET_ARCH=$2
 OPERATION=$3
 DSCFILE=$4
 DEPSDIR=$5
+
+if [ -z "$OPERATION" ]; then
+    sed -n '/^# Usage:/,/^# Backend selection/p' "$0" | sed '$d; s/^# \{0,1\}//' 1>&2
+    exit 1
+fi
 
 # DSCFILE and DEPSDIR are optional, so "--" may take either position.
 NPOS=5
@@ -61,6 +87,265 @@ need_cmd() {
     done
 }
 
+pkg_installed() {
+    [ "$(dpkg-query -f '${db:Status-Status}' -W "$1" 2>/dev/null)" = installed ]
+}
+
+#
+# Host and setup checks
+#
+# Every chk_* function is silent and returns 0 when its requirement is met.
+# Otherwise it prints one line saying what is missing and how to fix it, and
+# returns 1.  "check" reports them all; the other operations require the ones
+# they depend on, so a missing piece is named before anything runs.
+
+require() {
+    if msg=$("$@"); then
+        return 0
+    fi
+    printf 'E: %s\n' "$msg" 1>&2
+    exit 1
+}
+
+warn_unless() {
+    if msg=$("$@"); then
+        return 0
+    fi
+    printf 'W: %s\n' "$msg" 1>&2
+    return 1
+}
+
+chk_basedir() {
+    [ -d "$BASEDIR/etc" ] && return 0
+    printf '%s/etc does not exist, BASEDIR is not valid' "$BASEDIR"
+    return 1
+}
+
+chk_backend_tools() {
+    case $BACKEND in
+        sbuild ) set -- sbuild mmdebstrap zstd ;;
+        pbuilder ) set -- pbuilder zstd debootstrap ;;
+    esac
+    missing=
+    for i in "$@"; do
+        have_cmd "$i" || missing="$missing $i"
+    done
+    [ -z "$missing" ] && return 0
+    printf 'the %s backend needs the missing command(s):%s' "$BACKEND" "$missing"
+    return 1
+}
+
+chk_subuid() {
+    me=$(id -un)
+    if grep -q "^$me:" /etc/subuid 2>/dev/null && grep -q "^$me:" /etc/subgid 2>/dev/null; then
+        return 0
+    fi
+    printf 'no subordinate id ranges for %s: sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 %s' "$me" "$me"
+    return 1
+}
+
+chk_map_auto() {
+    if unshare --help 2>/dev/null | grep -q -- '--map-auto'; then
+        return 0
+    fi
+    printf 'unshare(1) has no --map-auto, util-linux is too old'
+    return 1
+}
+
+chk_rcfile() {
+    [ -s "$RCFILE" ] && return 0
+    printf 'pbuilderrc %s does not exist or is empty' "$RCFILE"
+    return 1
+}
+
+chk_tarball() {
+    [ -s "$BASETAR" ] && return 0
+    printf '%s does not exist: run "mypbuilder %s %s create"' "$BASETAR" "$DIST" "$DEB_TARGET_ARCH"
+    return 1
+}
+
+chk_autopkgtest() {
+    have_cmd autopkgtest && return 0
+    printf 'autopkgtest is not installed: apt install autopkgtest'
+    return 1
+}
+
+# The qemu binary and EFI firmware package for DEB_TARGET_ARCH, as
+# autopkgtest-virt-qemu picks them.
+vm_arch_info() {
+    QEMUARCH=
+    QEMUPKG=
+    VMFPKG=
+    case $DEB_TARGET_ARCH in
+        amd64 ) QEMUARCH=x86_64; QEMUPKG=qemu-system-x86; VMFPKG=ovmf ;;
+        i386 ) QEMUARCH=i386; QEMUPKG=qemu-system-x86; VMFPKG=ovmf-ia32 ;;
+        arm64 ) QEMUARCH=aarch64; QEMUPKG=qemu-system-arm; VMFPKG=qemu-efi-aarch64 ;;
+        armhf )
+            # On an aarch64 host autopkgtest-virt-qemu runs armhf guests
+            # with qemu-system-aarch64 in 32-bit mode so KVM can be used.
+            QEMUARCH=arm
+            QEMUPKG=qemu-system-arm
+            VMFPKG=qemu-efi-arm
+            [ "$(uname -m)" = aarch64 ] && QEMUARCH=aarch64
+            ;;
+        riscv64 ) QEMUARCH=riscv64; QEMUPKG=qemu-system-misc ;;
+    esac
+}
+
+chk_qemu() {
+    vm_arch_info
+    if [ -z "$QEMUARCH" ]; then
+        printf 'mypbuilder has no VM support for %s' "$DEB_TARGET_ARCH"
+        return 1
+    fi
+    if ! have_cmd autopkgtest-virt-qemu; then
+        printf 'autopkgtest-virt-qemu is not installed: apt install autopkgtest'
+        return 1
+    fi
+    if ! have_cmd "qemu-system-$QEMUARCH"; then
+        printf 'qemu-system-%s is not installed: apt install %s' "$QEMUARCH" "$QEMUPKG"
+        return 1
+    fi
+    if ! have_cmd qemu-img; then
+        printf 'qemu-img is not installed: apt install qemu-utils'
+        return 1
+    fi
+    if [ -n "$VMFPKG" ] && ! pkg_installed "$VMFPKG"; then
+        printf 'EFI firmware for %s is not installed: apt install %s' "$DEB_TARGET_ARCH" "$VMFPKG"
+        return 1
+    fi
+}
+
+chk_kvm() {
+    [ -w /dev/kvm ] && return 0
+    if [ -e /dev/kvm ]; then
+        printf '/dev/kvm is not writable: sudo usermod -aG kvm %s, then log in again' "$(id -un)"
+    else
+        printf '/dev/kvm does not exist, the host has no KVM'
+    fi
+    return 1
+}
+
+# The same rule as QemuFactory.kvm_compatible in autopkgtest.
+chk_kvm_native() {
+    vm_arch_info
+    case "$(uname -m):$QEMUARCH" in
+        x86_64:x86_64|x86_64:i386|i?86:i386|aarch64:aarch64|s390x:s390x|ppc64le:ppc64le )
+            return 0
+            ;;
+    esac
+    printf 'KVM cannot accelerate %s guests on a %s host' "$DEB_TARGET_ARCH" "$(uname -m)"
+    return 1
+}
+
+chk_vm_image() {
+    [ -s "$VMIMG" ] && return 0
+    printf '%s does not exist: run "mypbuilder %s %s create-vm"' "$VMIMG" "$DIST" "$DEB_TARGET_ARCH"
+    return 1
+}
+
+chk_vm_builder() {
+    if ! have_cmd mmdebstrap-autopkgtest-build-qemu; then
+        printf 'mmdebstrap-autopkgtest-build-qemu is not installed: apt install mmdebstrap'
+        return 1
+    fi
+    msg=$(chk_subuid) || { printf '%s' "$msg"; return 1; }
+    if [ "$DEB_TARGET_ARCH" != "$DEB_HOST_ARCH" ] && ! dpkg --print-foreign-architectures | grep -qx "$DEB_TARGET_ARCH"; then
+        printf 'dpkg does not know %s: sudo dpkg --add-architecture %s && sudo apt update' "$DEB_TARGET_ARCH" "$DEB_TARGET_ARCH"
+        return 1
+    fi
+    # The same dependency list the builder checks itself.
+    if pkg_installed binutils-multiarch; then
+        binutils=
+    else
+        binutils=", binutils-$(dpkg-architecture -a"$DEB_TARGET_ARCH" -qDEB_HOST_GNU_TYPE 2>/dev/null | tr _ -) | binutils-multiarch"
+    fi
+    if ! msg=$(dpkg-checkbuilddeps -d "autopkgtest, dosfstools, e2fsprogs, fdisk, mount, mtools, passwd, uidmap, libarchive13, systemd-boot-efi:$DEB_TARGET_ARCH$binutils" /dev/null 2>&1); then
+        printf 'image builder dependencies: %s' "$(printf '%s' "$msg" | sed 's/^dpkg-checkbuilddeps: error: //')"
+        return 1
+    fi
+}
+
+chk_tier_qemu() {
+    for c in chk_autopkgtest chk_qemu chk_vm_image chk_kvm chk_kvm_native; do
+        msg=$($c) || { printf '%s' "$msg"; return 1; }
+    done
+}
+
+chk_tier_unshare() {
+    for c in chk_autopkgtest chk_subuid chk_map_auto; do
+        msg=$($c) || { printf '%s' "$msg"; return 1; }
+    done
+    have_cmd autopkgtest-virt-unshare && return 0
+    printf 'autopkgtest-virt-unshare is not installed: apt install autopkgtest'
+    return 1
+}
+
+chk_tier_chroot() {
+    msg=$(chk_autopkgtest) || { printf '%s' "$msg"; return 1; }
+    if ! have_cmd autopkgtest-virt-chroot; then
+        printf 'autopkgtest-virt-chroot is not installed: apt install autopkgtest'
+        return 1
+    fi
+    have_cmd sudo && return 0
+    printf 'sudo is not installed'
+    return 1
+}
+
+report() {
+    label=$1
+    level=$2
+    shift 2
+    if msg=$("$@"); then
+        printf '  ok    %s\n' "$label"
+    else
+        printf '  %-5s %s\n        %s\n' "$level" "$label" "$msg"
+        if [ "$level" = FAIL ]; then
+            CHECK_RC=1
+        fi
+    fi
+}
+
+do_check() {
+    CHECK_RC=0
+    printf 'mypbuilder %s %s, host %s (%s), %s backend\n' \
+        "$DIST" "$DEB_TARGET_ARCH" "$DEB_HOST_ARCH" "$(uname -m)" "$BACKEND"
+    printf 'Build and chroot:\n'
+    report "BASEDIR $BASEDIR" FAIL chk_basedir
+    report "$BACKEND backend tools" FAIL chk_backend_tools
+    if [ "$BACKEND" = sbuild ]; then
+        report 'subordinate id ranges' FAIL chk_subuid
+    fi
+    report "rc file $RCFILE" FAIL chk_rcfile
+    report "tarball $BASETAR" FAIL chk_tarball
+    printf 'autopkgtest, qemu tier:\n'
+    report 'qemu and EFI firmware' miss chk_qemu
+    report '/dev/kvm' miss chk_kvm
+    report "KVM for $DEB_TARGET_ARCH guests" miss chk_kvm_native
+    report "VM image $VMIMG" miss chk_vm_image
+    report 'VM image builder' miss chk_vm_builder
+    printf 'autopkgtest, fallback tiers:\n'
+    report 'unshare' miss chk_tier_unshare
+    report 'chroot via sudo' miss chk_tier_chroot
+    testbed=none
+    for t in qemu unshare chroot; do
+        if "chk_tier_$t" > /dev/null; then
+            testbed=$t
+            break
+        fi
+    done
+    if [ -n "$MYPBUILDER_TESTBED" ]; then
+        printf 'autopkgtest would use: %s (MYPBUILDER_TESTBED forces %s)\n' "$testbed" "$MYPBUILDER_TESTBED"
+    else
+        printf 'autopkgtest would use: %s\n' "$testbed"
+    fi
+    return $CHECK_RC
+}
+
+#
+# Common setup
+#
+
 BACKEND=$MYPBUILDER_BACKEND
 if [ -z "$BACKEND" ]; then
     if have_cmd sbuild && have_cmd mmdebstrap; then
@@ -71,15 +356,7 @@ if [ -z "$BACKEND" ]; then
 fi
 
 case $BACKEND in
-    sbuild )
-        need_cmd dpkg-architecture sbuild mmdebstrap zstd
-        if ! grep -q "^$(id -un):" /etc/subuid; then
-            printf 'E: No subordinate uid range for "%s" in /etc/subuid, needed by the sbuild backend.\n' "$(id -un)" 1>&2
-            exit 1
-        fi
-        ;;
-    pbuilder )
-        need_cmd dpkg-architecture pbuilder zstd debootstrap
+    sbuild|pbuilder )
         ;;
     * )
         printf 'E: MYPBUILDER_BACKEND must be "sbuild" or "pbuilder", not "%s".\n' "$BACKEND" 1>&2
@@ -89,6 +366,7 @@ esac
 
 DEBOOTSTRAP=debootstrap
 
+need_cmd dpkg-architecture
 if ! dpkg-architecture -a"$DEB_TARGET_ARCH" >/dev/null 2>&1; then
     printf "E: \"$DEB_TARGET_ARCH\" is not a valid architecture.\n" 1>&2
     exit 1
@@ -116,16 +394,44 @@ fi
 
 RCFILE=$BASEDIR/etc/$DIST-$DEB_TARGET_ARCH
 BASETAR=$BASEDIR/base/$DIST-$DEB_TARGET_ARCH-base.tar.zst
+VMIMG=$BASEDIR/base/$DIST-$DEB_TARGET_ARCH.img
 RESULTDIR=$BASEDIR/result/$DIST-$DEB_TARGET_ARCH
 LOGDIR=$BASEDIR/logs/$DIST-$DEB_TARGET_ARCH
 
-if ! [ -d $BASEDIR/etc ]; then
-    printf "E: $BASEDIR/etc does not exist, BASEDIR not valid.\n" 1>&2
-    exit 1
-elif ! [ -s "$RCFILE" ]; then
-    printf "E: $RCFILE pbuilderrc file does not exist or empty.\n" 1>&2
-    exit 1
+case $OPERATION in
+    build|autopkgtest )
+        if ! [ -s "$DSCFILE" ]; then
+            printf "E: $DSCFILE does not exist or empty.\n" 1>&2
+            exit 1
+        fi
+        BASENAME=`basename $DSCFILE .dsc`
+        ;;
+    execute|edit-script )
+        if ! [ -f "$DSCFILE" ]; then
+            printf 'E: Script "%s" does not exist.\n' "$DSCFILE" 1>&2
+            exit 1
+        fi
+        BASENAME=`basename $DSCFILE`
+        ;;
+    check|create|create-vm|update|clean|debuild|login|edit )
+        ;;
+    * )
+        printf "E: Operations in check|create|create-vm|update|build|debuild|login|edit|execute|edit-script|autopkgtest|clean.\n" 1>&2
+        exit 1
+        ;;
+esac
+
+if [ "$OPERATION" = check ]; then
+    do_check
+    exit $?
 fi
+
+require chk_basedir
+require chk_backend_tools
+if [ "$BACKEND" = sbuild ]; then
+    require chk_subuid
+fi
+require chk_rcfile
 
 if ! [ -d $BASEDIR/base ]; then
     printf "W: $BASEDIR/base does not exist, creating.\n" 1>&2
@@ -153,35 +459,15 @@ for i in "$RESULTDIR" "$LOGDIR"; do
 done
 
 case $OPERATION in
-    build|autopkgtest )
-        if ! [ -s "$DSCFILE" ]; then
-            printf "E: $DSCFILE does not exist or empty.\n" 1>&2
-            exit 1
-        fi
-        BASENAME=`basename $DSCFILE .dsc`
-        ;;
-    execute|edit-script )
-        if ! [ -f "$DSCFILE" ]; then
-            printf 'E: Script "%s" does not exist.\n' "$DSCFILE" 1>&2
-            exit 1
-        fi
-        BASENAME=`basename $DSCFILE`
-        ;;
-    create|update|clean|debuild|login|edit )
+    create|create-vm )
         ;;
     * )
-        printf "E: Operations in build|debuild|create|update|clean|login|edit|execute|edit-script|autopkgtest.\n" 1>&2
-        exit 1
+        require chk_tarball
         ;;
 esac
 
-if [ "$OPERATION" != "create" ] && ! [ -s "$BASETAR" ]; then
-    printf "E: $BASETAR does not exist or empty.\n" 1>&2
-    exit 1
-fi
-
 DATUM=`/bin/date +"%Y%m%d-%H%M"`
-if ! [ -z $BASENAME ]; then
+if [ -n "$BASENAME" ]; then
     LOG=$LOGDIR/${OPERATION}_${BASENAME}_${DATUM}.log
 else
     LOG=$LOGDIR/${OPERATION}_${DATUM}.log
@@ -201,143 +487,53 @@ fi
 
 NJOBS=`nproc`
 
-#
-# pbuilder backend
-#
+TMPD=$(mktemp -d)
+MMRC=$TMPD/mmdebstrap.rc
+MMLOG=
+CHROOT_ENV="env PATH=$SYSPATH HOME=/root LC_ALL=C.UTF-8"
+AUTOPKGTEST_CHROOT=
 
-FUNC_PBUILDER_TMP() {
-    if ! [ -d $PBUILDER_TMP ]; then
-        printf "W: $PBUILDER_TMP does not exist, creating.\n" 1>&2
-        sudo mkdir -p $PBUILDER_TMP
+cleanup() {
+    if [ -n "$AUTOPKGTEST_CHROOT" ]; then
+        at_chroot_cleanup
     fi
+    rm -rf "$TMPD"
 }
-
-run_pbuilder() {
-    # DEB_BUILD_OPTIONS belongs in the rc as `export DEB_BUILD_OPTIONS=...`
-    # so it survives sudo without needing SETENV in sudoers.
-    if [ -n "$DEPSDIR" ]; then
-        sudo $ARG pbuilder $PBUILDER_ACTION $COMMON_ARGS \
-            --bindmounts "$DEPSDIR" \
-            --othermirror "deb [trusted=yes] file://$DEPSDIR ./" \
-            "$@"
-    else
-        sudo $ARG pbuilder $PBUILDER_ACTION $COMMON_ARGS "$@"
-    fi
-}
-
-pb_autopkgtest() {
-    for i in autopkgtest autopkgtest-virt-chroot; do
-        if ! command -v "$i" > /dev/null 2>&1; then
-            printf 'E: Required command "%s" not found. Install autopkgtest.\n' "$i" 1>&2
-            exit 1
-        fi
-    done
-    AUTOPKGTEST_CHROOT=$PBUILDER_TMP/autopkgtest-$$
-    sudo mkdir -p "$AUTOPKGTEST_CHROOT"
-    sudo tar -xf "$BASETAR" -C "$AUTOPKGTEST_CHROOT"
-    AUTOPKGTEST_OUTDIR=$LOGDIR/autopkgtest_${BASENAME}_${DATUM}
-    rm -rf "$AUTOPKGTEST_OUTDIR"
-    mkdir -p "$AUTOPKGTEST_OUTDIR"
-    CHROOT_MOUNTS=""
-    for mp in proc:proc:proc sysfs:sysfs:sys devtmpfs:udev:dev devpts:devpts:dev/pts; do
-        FSTYPE=${mp%%:*}
-        rest=${mp#*:}
-        SRCNAME=${rest%%:*}
-        RELPATH=${rest#*:}
-        MOUNTPOINT="$AUTOPKGTEST_CHROOT/$RELPATH"
-        sudo mkdir -p "$MOUNTPOINT"
-        if sudo mount -t "$FSTYPE" "$SRCNAME" "$MOUNTPOINT"; then
-            CHROOT_MOUNTS="$MOUNTPOINT $CHROOT_MOUNTS"
-        else
-            printf "W: Failed to mount %s on %s, continuing anyway.\n" "$FSTYPE" "$MOUNTPOINT" 1>&2
-        fi
-    done
-
-    cleanup_chroot() {
-        for mp in $CHROOT_MOUNTS; do
-            sudo umount -l "$mp" 2>/dev/null || true
-        done
-        sudo rm -rf "$AUTOPKGTEST_CHROOT"
-    }
-    trap cleanup_chroot EXIT
-
-    printf "I: Running autopkgtest on %s\n" "$DSCFILE"
-    sudo autopkgtest "$DSCFILE" \
-        -o "$AUTOPKGTEST_OUTDIR" \
-        --build-parallel=${NJOBS} \
-        -- chroot "$AUTOPKGTEST_CHROOT"
-    AUTOPKGTEST_RC=$?
-    cleanup_chroot
-    trap - EXIT
-    exit $AUTOPKGTEST_RC
-}
-
-pb_main() {
-    COMMON_ARGS="--override-config \
-        --autocleanaptcache \
-        --compressprog zstd \
-        --debootstrap $DEBOOTSTRAP \
-        --architecture $DEB_TARGET_ARCH \
-        --distribution $DISTRO \
-        --configfile $RCFILE \
-        --hookdir $BASEDIR/hooks \
-        --basetgz $BASETAR"
-
-    if [ -n "$DEPSDIR" ]; then
-        if ! command -v apt-ftparchive > /dev/null 2>&1; then
-            printf 'E: apt-ftparchive not found. Install apt-utils.\n' 1>&2
-            exit 1
-        fi
-        (cd "$DEPSDIR" && apt-ftparchive packages . > Packages)
-    fi
-
-    FUNC_PBUILDER_TMP
-    case $OPERATION in
-        autopkgtest )
-            pb_autopkgtest
-            ;;
-        build|debuild|create|update|clean )
-            PBUILDER_ACTION=$OPERATION
-            run_pbuilder \
-                --buildresult "$RESULTDIR" \
-                --logfile "$LOG" \
-                "$@" ${DSCFILE:+"$DSCFILE"}
-            RC=$?
-            [ -n "$DEPSDIR" ] && rm -f "$DEPSDIR/Packages"
-            exit $RC
-            ;;
-        login )
-            PBUILDER_ACTION=login
-            run_pbuilder
-            ;;
-        edit )
-            PBUILDER_ACTION=login
-            run_pbuilder --save-after-login
-            ;;
-        execute )
-            PBUILDER_ACTION=execute
-            run_pbuilder --logfile "$LOG" -- "$DSCFILE" "$@"
-            ;;
-        edit-script )
-            PBUILDER_ACTION=execute
-            run_pbuilder --logfile "$LOG" --save-after-exec -- "$DSCFILE" "$@"
-            ;;
-    esac
-}
-
-#
-# sbuild backend
-#
-# Builds run in sbuild's unshare mode straight from the pbuilder tarball.
-# sbuild-update/sbuild-shell are no-ops in unshare mode, so the chroot is
-# created and modified with mmdebstrap: the tarball is unpacked into a user
-# namespace, hooks run inside it, and the result is streamed back through
-# zstd.  A hook exiting non-zero aborts mmdebstrap, so nothing is saved.
+trap cleanup EXIT
 
 # Print the value of a variable set by the pbuilderrc (bash syntax).
 rc_value() {
     DIST=$DIST ARCH=$DEB_TARGET_ARCH DISTRIBUTION=$DISTRO ARCHITECTURE=$DEB_TARGET_ARCH \
         bash -c '. "$1" 1>&2; printf "%s\n" "${!2}"' rc "$RCFILE" "$1"
+}
+
+read_rc() {
+    if [ -n "$RC_READ" ]; then
+        return 0
+    fi
+    RC_READ=1
+    MIRRORSITE=$(rc_value MIRRORSITE)
+    COMPONENTS=$(rc_value COMPONENTS)
+    COMPONENTS=${COMPONENTS:-main}
+    OTHERMIRROR=$(rc_value OTHERMIRROR)
+    EXTRAPACKAGES=$(rc_value EXTRAPACKAGES)
+    DEB_BUILD_OPTIONS=$(rc_value DEB_BUILD_OPTIONS)
+    if [ -n "$DEB_BUILD_OPTIONS" ]; then
+        export DEB_BUILD_OPTIONS
+    fi
+    VARIANT=buildd
+    KEYRING=
+    for opt in $(rc_value 'DEBOOTSTRAPOPTS[@]'); do
+        case $opt in
+            --variant=* ) VARIANT=${opt#--variant=} ;;
+            --keyring=* ) KEYRING=${opt#--keyring=} ;;
+        esac
+    done
+    VMCPUS=$(rc_value VMCPUS)
+    VMCPUS=${VMCPUS:-$NJOBS}
+    VMRAM=$(rc_value VMRAM)
+    VMRAM=${VMRAM:-4096}
+    VMSIZE=$(rc_value VMSIZE)
 }
 
 shquote() {
@@ -351,6 +547,17 @@ gen_sources_list() {
         printf '%s\n' "$OTHERMIRROR" | tr '|' '\n' | sed 's/^ *//; s/ *$//'
     fi
 }
+
+FUNC_PBUILDER_TMP() {
+    if ! [ -d $PBUILDER_TMP ]; then
+        printf "W: $PBUILDER_TMP does not exist, creating.\n" 1>&2
+        sudo mkdir -p $PBUILDER_TMP
+    fi
+}
+
+#
+# mmdebstrap helpers, shared by the sbuild backend and the unshare testbed
+#
 
 # Run mmdebstrap with its tar stream on stdout.  Status output goes to the
 # terminal and, when MMLOG is set, also to that file.  The exit status is
@@ -402,6 +609,267 @@ mm_reuse() {
     fi
 }
 
+# pbuilder packs its tarballs from ./* so they carry no "./" entry, and the
+# unpacked session root then keeps the 0700 mode of mkdtemp.  sbuild and
+# autopkgtest run parts of the session as an unprivileged user and fail on
+# that.  Tarballs written by mmdebstrap have the entry near the start, after
+# the device nodes.
+ensure_root_entry() {
+    if zstd -dc "$BASETAR" 2>/dev/null | tar -t 2>/dev/null | head -n 100 | grep -qx './'; then
+        return
+    fi
+    if ! have_cmd mmdebstrap; then
+        printf 'W: %s has no "./" entry and mmdebstrap is not installed to repack it.\n' "$BASETAR" 1>&2
+        return
+    fi
+    printf 'W: %s has no "./" entry, repacking it once.\n' "$BASETAR" 1>&2
+    mm_reuse "$BASETAR" || exit 1
+}
+
+#
+# autopkgtest
+#
+
+select_testbed() {
+    TESTBED=$MYPBUILDER_TESTBED
+    case $TESTBED in
+        '' )
+            for t in qemu unshare chroot; do
+                if msg=$("chk_tier_$t"); then
+                    TESTBED=$t
+                    break
+                fi
+                printf 'I: Not using the %s testbed: %s\n' "$t" "$msg" 1>&2
+            done
+            if [ -z "$TESTBED" ]; then
+                printf 'E: No autopkgtest testbed is available, see "mypbuilder %s %s check".\n' "$DIST" "$DEB_TARGET_ARCH" 1>&2
+                exit 1
+            fi
+            ;;
+        qemu )
+            # Forced: run emulated rather than refuse, but autopkgtest-virt-qemu
+            # itself gives up on a /dev/kvm it cannot open.
+            require chk_autopkgtest
+            require chk_qemu
+            require chk_vm_image
+            if [ -e /dev/kvm ]; then
+                require chk_kvm
+            else
+                printf 'W: No KVM on this host, the VM runs emulated and slowly.\n' 1>&2
+            fi
+            warn_unless chk_kvm_native
+            ;;
+        unshare|chroot )
+            require "chk_tier_$TESTBED"
+            ;;
+        * )
+            printf 'E: MYPBUILDER_TESTBED must be "qemu", "unshare" or "chroot", not "%s".\n' "$TESTBED" 1>&2
+            exit 1
+            ;;
+    esac
+    printf 'I: autopkgtest testbed: %s\n' "$TESTBED"
+}
+
+at_chroot_open() {
+    FUNC_PBUILDER_TMP
+    AUTOPKGTEST_CHROOT=$PBUILDER_TMP/autopkgtest-$$
+    sudo mkdir -p "$AUTOPKGTEST_CHROOT"
+    sudo tar -xf "$BASETAR" -C "$AUTOPKGTEST_CHROOT"
+    CHROOT_MOUNTS=""
+    for mp in proc:proc:proc sysfs:sysfs:sys devtmpfs:udev:dev devpts:devpts:dev/pts; do
+        FSTYPE=${mp%%:*}
+        rest=${mp#*:}
+        SRCNAME=${rest%%:*}
+        RELPATH=${rest#*:}
+        MOUNTPOINT="$AUTOPKGTEST_CHROOT/$RELPATH"
+        sudo mkdir -p "$MOUNTPOINT"
+        if sudo mount -t "$FSTYPE" "$SRCNAME" "$MOUNTPOINT"; then
+            CHROOT_MOUNTS="$MOUNTPOINT $CHROOT_MOUNTS"
+        else
+            printf "W: Failed to mount %s on %s, continuing anyway.\n" "$FSTYPE" "$MOUNTPOINT" 1>&2
+        fi
+    done
+}
+
+at_chroot_cleanup() {
+    for mp in $CHROOT_MOUNTS; do
+        sudo umount -l "$mp" 2>/dev/null || true
+    done
+    sudo rm -rf "$AUTOPKGTEST_CHROOT"
+    AUTOPKGTEST_CHROOT=
+}
+
+# Runs autopkgtest on DSCFILE in the selected testbed.  The arguments are the
+# extra ones for autopkgtest itself; they go before the testbed part.
+run_autopkgtest() {
+    AUTOPKGTEST_OUTDIR=$LOGDIR/autopkgtest_${BASENAME}_${DATUM}
+    rm -rf "$AUTOPKGTEST_OUTDIR"
+    mkdir -p "$AUTOPKGTEST_OUTDIR"
+    set -- -o "$AUTOPKGTEST_OUTDIR" --build-parallel="$NJOBS" "$@"
+    if [ -n "$DEPSDIR" ]; then
+        for f in "$DEPSDIR"/*.deb; do
+            [ -f "$f" ] && set -- "$f" "$@"
+        done
+    fi
+    CHANGES=
+    for f in "$RESULTDIR/${BASENAME}_${DEB_TARGET_ARCH}.changes" "$RESULTDIR/${BASENAME}_all.changes"; do
+        if [ -s "$f" ]; then
+            CHANGES=$f
+            break
+        fi
+    done
+    if [ -n "$CHANGES" ] && [ "$CHANGES" -nt "$DSCFILE" ]; then
+        printf 'I: Installing the binaries from %s instead of building.\n' "$CHANGES"
+        set -- "$DSCFILE" "$CHANGES" "$@"
+    else
+        if [ -n "$CHANGES" ]; then
+            printf 'I: %s is older than the .dsc, building in the testbed.\n' "$CHANGES"
+        fi
+        set -- "$DSCFILE" "$@"
+    fi
+    printf 'I: Running autopkgtest on %s\n' "$DSCFILE"
+    case $TESTBED in
+        qemu )
+            read_rc
+            autopkgtest "$@" -U -- qemu \
+                --boot=efi \
+                --dpkg-architecture="$DEB_TARGET_ARCH" \
+                -c "$VMCPUS" --ram-size "$VMRAM" \
+                "$VMIMG"
+            ;;
+        unshare )
+            ensure_root_entry
+            autopkgtest "$@" -- unshare \
+                --tarball "$BASETAR" \
+                --arch "$DEB_TARGET_ARCH" \
+                --release "$DISTRO" \
+                --prefix mypbuilder-unshare.
+            ;;
+        chroot )
+            at_chroot_open
+            sudo autopkgtest "$@" -- chroot "$AUTOPKGTEST_CHROOT"
+            RC=$?
+            at_chroot_cleanup
+            return $RC
+            ;;
+    esac
+}
+
+#
+# VM image for the qemu testbed
+#
+
+vm_create() {
+    require chk_vm_builder
+    read_rc
+    set -- --boot=efi --architecture="$DEB_TARGET_ARCH"
+    if [ -n "$MIRRORSITE" ]; then
+        set -- "$@" --mirror="$MIRRORSITE"
+        # The builder only takes the mirror; the components and OTHERMIRROR
+        # of the rc go in through its customize script.
+        {
+            printf 'cat > /etc/apt/sources.list <<"EOF"\n'
+            gen_sources_list
+            printf 'EOF\n'
+        } > "$TMPD/vm-customize.sh"
+        set -- "$@" --script="$TMPD/vm-customize.sh"
+    fi
+    if [ -n "$KEYRING" ]; then
+        set -- "$@" --keyring="$KEYRING"
+    fi
+    if [ -n "$VMSIZE" ]; then
+        set -- "$@" --size="$VMSIZE"
+    fi
+    VMLOG=$LOGDIR/create-vm_${DATUM}.log
+    # The builder grows the file it is given, so it must start from nothing.
+    rm -f "$VMIMG.new"
+    printf 'I: Building %s, log in %s\n' "$VMIMG" "$VMLOG"
+    { mmdebstrap-autopkgtest-build-qemu "$@" "$DISTRO" "$VMIMG.new" 2>&1; echo $? > "$TMPD/vm.rc"; } | tee "$VMLOG"
+    if [ "$(cat "$TMPD/vm.rc")" -ne 0 ]; then
+        rm -f "$VMIMG.new"
+        printf 'E: VM image not saved, %s is unchanged.\n' "$VMIMG" 1>&2
+        return 1
+    fi
+    mv "$VMIMG.new" "$VMIMG"
+    printf 'I: Saved %s\n' "$VMIMG"
+}
+
+#
+# pbuilder backend
+#
+
+run_pbuilder() {
+    # DEB_BUILD_OPTIONS belongs in the rc as `export DEB_BUILD_OPTIONS=...`
+    # so it survives sudo without needing SETENV in sudoers.
+    if [ -n "$DEPSDIR" ]; then
+        sudo $ARG pbuilder $PBUILDER_ACTION $COMMON_ARGS \
+            --bindmounts "$DEPSDIR" \
+            --othermirror "deb [trusted=yes] file://$DEPSDIR ./" \
+            "$@"
+    else
+        sudo $ARG pbuilder $PBUILDER_ACTION $COMMON_ARGS "$@"
+    fi
+}
+
+pb_main() {
+    COMMON_ARGS="--override-config \
+        --autocleanaptcache \
+        --compressprog zstd \
+        --debootstrap $DEBOOTSTRAP \
+        --architecture $DEB_TARGET_ARCH \
+        --distribution $DISTRO \
+        --configfile $RCFILE \
+        --hookdir $BASEDIR/hooks \
+        --basetgz $BASETAR"
+
+    if [ -n "$DEPSDIR" ]; then
+        if ! command -v apt-ftparchive > /dev/null 2>&1; then
+            printf 'E: apt-ftparchive not found. Install apt-utils.\n' 1>&2
+            exit 1
+        fi
+        (cd "$DEPSDIR" && apt-ftparchive packages . > Packages)
+    fi
+
+    FUNC_PBUILDER_TMP
+    case $OPERATION in
+        build|debuild|create|update|clean )
+            PBUILDER_ACTION=$OPERATION
+            run_pbuilder \
+                --buildresult "$RESULTDIR" \
+                --logfile "$LOG" \
+                "$@" ${DSCFILE:+"$DSCFILE"}
+            RC=$?
+            [ -n "$DEPSDIR" ] && rm -f "$DEPSDIR/Packages"
+            return $RC
+            ;;
+        login )
+            PBUILDER_ACTION=login
+            run_pbuilder
+            ;;
+        edit )
+            PBUILDER_ACTION=login
+            run_pbuilder --save-after-login
+            ;;
+        execute )
+            PBUILDER_ACTION=execute
+            run_pbuilder --logfile "$LOG" -- "$DSCFILE" "$@"
+            ;;
+        edit-script )
+            PBUILDER_ACTION=execute
+            run_pbuilder --logfile "$LOG" --save-after-exec -- "$DSCFILE" "$@"
+            ;;
+    esac
+}
+
+#
+# sbuild backend
+#
+# Builds run in sbuild's unshare mode straight from the pbuilder tarball.
+# sbuild-update/sbuild-shell are no-ops in unshare mode, so the chroot is
+# created and modified with mmdebstrap: the tarball is unpacked into a user
+# namespace, hooks run inside it, and the result is streamed back through
+# zstd.  A hook exiting non-zero aborts mmdebstrap, so nothing is saved.
+
 sb_create() {
     set -- --mode=unshare --format=tar \
         --variant="$VARIANT" \
@@ -449,21 +917,8 @@ sb_update() {
     mm_reuse "$BASETAR" "$@"
 }
 
-# pbuilder packs its tarballs from ./* so they carry no "./" entry, and the
-# unpacked session root then keeps the 0700 mode of mkdtemp.  sbuild and
-# autopkgtest run parts of the session as an unprivileged user and fail on
-# that.  Tarballs written by mmdebstrap have the entry near the start, after
-# the device nodes.
-sb_ensure_root_entry() {
-    if zstd -dc "$BASETAR" 2>/dev/null | tar -t 2>/dev/null | head -n 100 | grep -qx './'; then
-        return
-    fi
-    printf 'W: %s has no "./" entry, repacking it once.\n' "$BASETAR" 1>&2
-    mm_reuse "$BASETAR" || exit 1
-}
-
 sb_build() {
-    sb_ensure_root_entry
+    ensure_root_entry
     printf '%s\n' "\$log_dir = '$LOGDIR';" "1;" > "$TMPD/sbuild.conf"
     if [ -n "$DEPSDIR" ]; then
         set -- --extra-package="$DEPSDIR" "$@"
@@ -496,26 +951,10 @@ sb_script() {
         --customize-hook='rm -f "$1/runscript"'
 }
 
-sb_autopkgtest() {
-    need_cmd autopkgtest autopkgtest-virt-unshare
-    sb_ensure_root_entry
-    AUTOPKGTEST_OUTDIR=$LOGDIR/autopkgtest_${BASENAME}_${DATUM}
-    rm -rf "$AUTOPKGTEST_OUTDIR"
-    mkdir -p "$AUTOPKGTEST_OUTDIR"
-    printf "I: Running autopkgtest on %s\n" "$DSCFILE"
-    autopkgtest "$DSCFILE" \
-        -o "$AUTOPKGTEST_OUTDIR" \
-        --build-parallel=${NJOBS} \
-        -- unshare \
-        --tarball "$BASETAR" \
-        --arch "$DEB_TARGET_ARCH" \
-        --release "$DISTRO"
-}
-
 # Sessions are unpacked below $TMPDIR and removed when they end; an
 # interrupted one leaves a directory owned by subordinate uids behind.
 sb_clean() {
-    for d in "${TMPDIR:-/tmp}"/tmp.sbuild.* "${TMPDIR:-/tmp}"/mmdebstrap.*; do
+    for d in "${TMPDIR:-/tmp}"/tmp.sbuild.* "${TMPDIR:-/tmp}"/mmdebstrap.* "${TMPDIR:-/tmp}"/mypbuilder-unshare.*; do
         [ -d "$d" ] || continue
         printf 'I: Removing %s\n' "$d"
         unshare --map-auto --map-root-user rm -rf "$d"
@@ -523,29 +962,7 @@ sb_clean() {
 }
 
 sb_main() {
-    TMPD=$(mktemp -d)
-    trap 'rm -rf "$TMPD"' EXIT
-    MMRC=$TMPD/mmdebstrap.rc
-    MMLOG=
-    CHROOT_ENV="env PATH=$SYSPATH HOME=/root LC_ALL=C.UTF-8"
-
-    MIRRORSITE=$(rc_value MIRRORSITE)
-    COMPONENTS=$(rc_value COMPONENTS)
-    COMPONENTS=${COMPONENTS:-main}
-    OTHERMIRROR=$(rc_value OTHERMIRROR)
-    EXTRAPACKAGES=$(rc_value EXTRAPACKAGES)
-    DEB_BUILD_OPTIONS=$(rc_value DEB_BUILD_OPTIONS)
-    if [ -n "$DEB_BUILD_OPTIONS" ]; then
-        export DEB_BUILD_OPTIONS
-    fi
-    VARIANT=buildd
-    KEYRING=
-    for opt in $(rc_value 'DEBOOTSTRAPOPTS[@]'); do
-        case $opt in
-            --variant=* ) VARIANT=${opt#--variant=} ;;
-            --keyring=* ) KEYRING=${opt#--keyring=} ;;
-        esac
-    done
+    read_rc
 
     if [ -n "$(ls -A "$BASEDIR/hooks")" ]; then
         printf 'W: Hooks in %s are not run by the sbuild backend.\n' "$BASEDIR/hooks" 1>&2
@@ -575,14 +992,27 @@ sb_main() {
         edit-script )
             sb_script "$BASETAR" "$@"
             ;;
-        autopkgtest )
-            sb_autopkgtest
-            ;;
         clean )
             sb_clean
             ;;
     esac
 }
+
+#
+# Dispatch
+#
+
+case $OPERATION in
+    create-vm )
+        vm_create
+        exit $?
+        ;;
+    autopkgtest )
+        select_testbed
+        run_autopkgtest "$@"
+        exit $?
+        ;;
+esac
 
 case $BACKEND in
     sbuild )
@@ -592,3 +1022,11 @@ case $BACKEND in
         pb_main "$@"
         ;;
 esac
+RC=$?
+
+if [ "$OPERATION" = update ] && [ $RC -eq 0 ] && [ -s "$VMIMG" ]; then
+    printf 'I: Rebuilding the VM image as well.\n'
+    vm_create
+    RC=$?
+fi
+exit $RC
