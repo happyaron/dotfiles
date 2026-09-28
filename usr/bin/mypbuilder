@@ -492,10 +492,14 @@ MMRC=$TMPD/mmdebstrap.rc
 MMLOG=
 CHROOT_ENV="env PATH=$SYSPATH HOME=/root LC_ALL=C.UTF-8"
 AUTOPKGTEST_CHROOT=
+SBLOGDIR=
 
 cleanup() {
     if [ -n "$AUTOPKGTEST_CHROOT" ]; then
         at_chroot_cleanup
+    fi
+    if [ -n "$SBLOGDIR" ]; then
+        sb_save_log
     fi
     rm -rf "$TMPD"
 }
@@ -917,9 +921,30 @@ sb_update() {
     mm_reuse "$BASETAR" "$@"
 }
 
+# sbuild names its log after the package and cannot be told otherwise, so it
+# writes into a scratch directory below LOGDIR and the log is renamed to $LOG,
+# the name the pbuilder backend uses.  The fixed timestamp makes the name of
+# the symlink sbuild leaves in RESULTDIR predictable; it is removed because it
+# would dangle.
+sb_save_log() {
+    for f in "$SBLOGDIR"/*-mypbuilder.build; do
+        [ -f "$f" ] || continue
+        mv "$f" "$LOG"
+        name=${f##*/}
+        rm -f "$RESULTDIR/${name%-mypbuilder.build}.build"
+        printf 'I: Build log in %s\n' "$LOG"
+    done
+    rmdir "$SBLOGDIR"
+    SBLOGDIR=
+}
+
 sb_build() {
     ensure_root_entry
-    printf '%s\n' "\$log_dir = '$LOGDIR';" "1;" > "$TMPD/sbuild.conf"
+    SBLOGDIR=$(mktemp -d "$LOGDIR/.sbuild.XXXXXX")
+    printf '%s\n' \
+        "\$log_dir = '$SBLOGDIR';" \
+        "\$log_filename_timestamp_format = 'mypbuilder';" \
+        "1;" > "$TMPD/sbuild.conf"
     if [ -n "$DEPSDIR" ]; then
         set -- --extra-package="$DEPSDIR" "$@"
     fi
@@ -930,6 +955,9 @@ sb_build() {
         --arch="$DEB_TARGET_ARCH" \
         --build-dir="$RESULTDIR" \
         "$@"
+    RC=$?
+    sb_save_log
+    return $RC
 }
 
 sb_shell() {
