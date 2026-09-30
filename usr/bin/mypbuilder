@@ -943,7 +943,10 @@ sb_save_log() {
 sb_build() {
     ensure_root_entry
     SBLOGDIR=$(mktemp -d "$LOGDIR/.sbuild.XXXXXX")
+    # chroot_mode has to come from a config file: set only on the command
+    # line, sbuild still prints its notice about the unshare default.
     printf '%s\n' \
+        "\$chroot_mode = 'unshare';" \
         "\$log_dir = '$SBLOGDIR';" \
         "\$log_filename_timestamp_format = 'mypbuilder';" \
         "1;" > "$TMPD/sbuild.conf"
