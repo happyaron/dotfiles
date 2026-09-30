@@ -597,18 +597,20 @@ mm_save() {
 # The tarball is unpacked by hand because mmdebstrap's tar-in only decompresses
 # what tar itself recognises on a pipe.  mmtarfilter drops the char and block
 # devices, which cannot be created in a user namespace; mmdebstrap puts them
-# back when it writes the tarball out.
+# back when it writes the tarball out.  The hook runs as a subordinate uid
+# that may not be able to reach BASETAR (a 0700 home directory), so the
+# tarball is opened here and the hook reads it from the inherited fd 9.
 mm_reuse() {
     dest=$1
     shift
     set -- --mode=unshare --variant=custom \
         --skip=update,setup,cleanup \
-        --setup-hook="zstd -dc $BASETAR | mmtarfilter --type-exclude=3 --type-exclude=4 | tar --directory \"\$1\" --extract" \
+        --setup-hook="zstd -dc <&9 | mmtarfilter --type-exclude=3 --type-exclude=4 | tar --directory \"\$1\" --extract" \
         "$@" ''
     if [ -n "$dest" ]; then
-        mm_save "$dest" "$@" -
+        mm_save "$dest" "$@" - 9< "$BASETAR"
     else
-        mm_exec "$@" /dev/null
+        mm_exec "$@" /dev/null 9< "$BASETAR"
         return "$(cat "$MMRC")"
     fi
 }
